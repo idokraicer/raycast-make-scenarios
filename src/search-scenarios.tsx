@@ -45,7 +45,7 @@ export default function SearchScenarios() {
     >
       {filtered.map((item) => (
         <ScenarioListItem
-          key={`${item.org.zone}-${item.scenario.id}`}
+          key={`${item.org.zone}-${item.org.id}-${item.team.id}-${item.scenario.id}`}
           item={item}
           onRefresh={revalidate}
         />

@@ -48,7 +48,7 @@ export default function SearchMake() {
         >
           {scenarios.data.map((item) => (
             <ScenarioListItem
-              key={`sc-${item.org.zone}-${item.scenario.id}`}
+              key={`sc-${item.org.zone}-${item.org.id}-${item.team.id}-${item.scenario.id}`}
               item={item}
               onRefresh={revalidate}
             />

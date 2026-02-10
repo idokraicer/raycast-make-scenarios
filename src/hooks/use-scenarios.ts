@@ -95,7 +95,17 @@ export function useScenarios() {
               .flatMap((r) => r.value);
 
             if (batch.length > 0) {
-              setItems((prev) => sortItems([...prev, ...batch], myUserId));
+              setItems((prev) => {
+                const merged = [...prev, ...batch];
+                const seen = new Set<string>();
+                const unique = merged.filter((item) => {
+                  const key = `${item.org.zone}-${item.scenario.id}`;
+                  if (seen.has(key)) return false;
+                  seen.add(key);
+                  return true;
+                });
+                return sortItems(unique, myUserId);
+              });
             }
           } finally {
             pending--;
