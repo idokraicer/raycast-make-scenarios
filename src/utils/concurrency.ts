@@ -13,10 +13,12 @@ export function createPool(concurrency: number) {
     run<T>(fn: () => Promise<T>): Promise<T> {
       return new Promise<T>((resolve, reject) => {
         queue.push(() => {
-          fn().then(resolve, reject).finally(() => {
-            running--;
-            next();
-          });
+          fn()
+            .then(resolve, reject)
+            .finally(() => {
+              running--;
+              next();
+            });
         });
         next();
       });

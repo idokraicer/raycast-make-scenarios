@@ -23,7 +23,11 @@ export async function fetchOrganizations(
   options?: SignalOption,
 ): Promise<Organization[]> {
   return apiFetchAllPages<Organization>(
-    { zone: getDiscoveryZone(), path: "/organizations", signal: options?.signal },
+    {
+      zone: getDiscoveryZone(),
+      path: "/organizations",
+      signal: options?.signal,
+    },
     "organizations",
   );
 }

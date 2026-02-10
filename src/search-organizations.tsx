@@ -4,7 +4,12 @@ import { SkippedOrgsSection } from "./components/skipped-orgs-section.js";
 import { buildOrgScenariosUrl, zoneLabel } from "./utils/url.js";
 
 export default function SearchOrganizations() {
-  const { data: items, isLoading, skippedOrgs, revalidate } = useOrganizations();
+  const {
+    data: items,
+    isLoading,
+    skippedOrgs,
+    revalidate,
+  } = useOrganizations();
 
   return (
     <List isLoading={isLoading} searchBarPlaceholder="Search organizations...">

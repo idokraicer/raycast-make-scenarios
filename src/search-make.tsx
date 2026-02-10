@@ -20,7 +20,9 @@ export default function SearchMake() {
     scenarios.revalidate();
   }
 
-  const allSkipped = [...new Set([...scenarios.skippedOrgs, ...orgs.skippedOrgs])];
+  const allSkipped = [
+    ...new Set([...scenarios.skippedOrgs, ...orgs.skippedOrgs]),
+  ];
 
   const showScenarios = filter === "all" || filter === "scenarios";
   const showOrgs = filter === "all" || filter === "organizations";
@@ -65,10 +67,7 @@ export default function SearchMake() {
         </List.Section>
       )}
       {showOrgs && (
-        <List.Section
-          title="Organizations"
-          subtitle={String(orgs.data.length)}
-        >
+        <List.Section title="Organizations" subtitle={String(orgs.data.length)}>
           {orgs.data.map((item) => {
             const { org, team } = item;
             const url = buildOrgScenariosUrl(org.zone, team.id);

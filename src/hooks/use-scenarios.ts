@@ -54,9 +54,7 @@ export function useScenarios() {
     const skippedOrgs: string[] = [];
 
     try {
-      const myUserId =
-        cachedUserId ??
-        (await fetchCurrentUserId({ signal }));
+      const myUserId = cachedUserId ?? (await fetchCurrentUserId({ signal }));
       cachedUserId = myUserId;
 
       const orgs = await fetchOrganizations({ signal });
