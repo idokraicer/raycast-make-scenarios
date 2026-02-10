@@ -4,6 +4,9 @@ import { Zone } from "./types.js";
 function getAuthHeader(): string {
   const { apiToken } = getPreferenceValues<{ apiToken: string }>();
   const token = apiToken.trim();
+  if (!token) {
+    throw new Error("API token is empty. Set it in extension preferences.");
+  }
   // Handle both "Token xxx" and bare "xxx" input
   if (token.toLowerCase().startsWith("token ")) {
     return token;
@@ -15,14 +18,17 @@ function baseUrl(zone: Zone): string {
   return `https://${zone}/api/v2`;
 }
 
-interface FetchOptions {
+export interface FetchOptions {
   zone: Zone;
   path: string;
   params?: Record<string, string>;
+  signal?: AbortSignal;
 }
 
+const MAX_PAGES = 50;
+
 export async function apiFetch<T>(options: FetchOptions): Promise<T> {
-  const { zone, path, params } = options;
+  const { zone, path, params, signal } = options;
   const url = new URL(`${baseUrl(zone)}${path}`);
   if (params) {
     for (const [key, value] of Object.entries(params)) {
@@ -35,6 +41,7 @@ export async function apiFetch<T>(options: FetchOptions): Promise<T> {
       Authorization: getAuthHeader(),
       "Content-Type": "application/json",
     },
+    signal,
   });
 
   if (!response.ok) {
@@ -59,15 +66,19 @@ export async function apiFetchAllPages<T>(
   let offset = 0;
   const limit = 100;
 
-  while (true) {
+  for (let page = 0; page < MAX_PAGES; page++) {
     const params = {
       ...options.params,
       "pg[offset]": String(offset),
       "pg[limit]": String(limit),
     };
-    const data = await apiFetch<Record<string, T[]>>({ ...options, params });
-    const items = data[key] ?? [];
-    allItems.push(...items);
+    const data = await apiFetch<Record<string, unknown>>({
+      ...options,
+      params,
+    });
+    const items = data[key];
+    if (!Array.isArray(items)) break;
+    allItems.push(...(items as T[]));
 
     if (items.length < limit) break;
     offset += limit;

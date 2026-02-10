@@ -1,17 +1,22 @@
-import { Action, ActionPanel, Color, Icon, List } from "@raycast/api";
-import { useState } from "react";
+import { Icon, List } from "@raycast/api";
+import { useMemo, useState } from "react";
 import { useScenarios } from "./hooks/use-scenarios.js";
-import { ScenarioItem } from "./api/types.js";
-import { buildScenarioUrl, zoneLabel } from "./utils/url.js";
+import { ScenarioItem, Team } from "./api/types.js";
+import { ScenarioListItem } from "./components/scenario-list-item.js";
+import { SkippedOrgsSection } from "./components/skipped-orgs-section.js";
 
 export default function SearchScenarios() {
-  const { data: items, isLoading, revalidate } = useScenarios();
+  const { data: items, isLoading, skippedOrgs, revalidate } = useScenarios();
   const [filter, setFilter] = useState<string>("all");
 
-  const orgs = uniqueBy(items ?? [], (i) => i.org.id).map((i) => i.org);
-  const teams = uniqueBy(items ?? [], (i) => i.team.id).map((i) => i.team);
+  const { orgs, teams } = useMemo(() => {
+    return {
+      orgs: uniqueBy(items, (i) => i.org.id).map((i) => i.org),
+      teams: uniqueBy(items, (i) => i.team.id).map((i) => i.team),
+    };
+  }, [items]);
 
-  const filtered = filterItems(items ?? [], filter);
+  const filtered = filterItems(items, filter);
 
   return (
     <List
@@ -30,8 +35,8 @@ export default function SearchScenarios() {
                 value={`org:${org.id}`}
               />
               {teams
-                .filter((t) => t.organizationId === org.id)
-                .map((team) => (
+                .filter((t: Team) => t.organizationId === org.id)
+                .map((team: Team) => (
                   <List.Dropdown.Item
                     key={team.id}
                     title={team.name}
@@ -43,6 +48,13 @@ export default function SearchScenarios() {
         </List.Dropdown>
       }
     >
+      {!isLoading && filtered.length === 0 && (
+        <List.EmptyView
+          title="No scenarios found"
+          description="Check your API token and zone in extension preferences."
+          icon={Icon.MagnifyingGlass}
+        />
+      )}
       {filtered.map((item) => (
         <ScenarioListItem
           key={`${item.org.zone}-${item.org.id}-${item.team.id}-${item.scenario.id}`}
@@ -50,59 +62,8 @@ export default function SearchScenarios() {
           onRefresh={revalidate}
         />
       ))}
+      <SkippedOrgsSection names={skippedOrgs} />
     </List>
-  );
-}
-
-function ScenarioListItem({
-  item,
-  onRefresh,
-}: {
-  item: ScenarioItem;
-  onRefresh: () => void;
-}) {
-  const { scenario, team, org, folder, webhookUrl } = item;
-  const url = buildScenarioUrl(org.zone, team.id, scenario.id);
-  const isActive = !scenario.isPaused;
-
-  const subtitle = folder ? `${team.name} / ${folder.name}` : team.name;
-
-  return (
-    <List.Item
-      title={scenario.name}
-      subtitle={subtitle}
-      icon={{
-        source: isActive ? Icon.CircleFilled : Icon.CircleDisabled,
-        tintColor: isActive ? Color.Green : Color.SecondaryText,
-      }}
-      accessories={[
-        { text: org.name },
-        { tag: { value: zoneLabel(org.zone), color: Color.Blue } },
-      ]}
-      actions={
-        <ActionPanel>
-          <Action.OpenInBrowser title="Open in Make.com" url={url} />
-          <Action.CopyToClipboard
-            title="Copy URL"
-            content={url}
-            shortcut={{ modifiers: ["cmd"], key: "c" }}
-          />
-          {webhookUrl && (
-            <Action.CopyToClipboard
-              title="Copy Webhook URL"
-              content={webhookUrl}
-              shortcut={{ modifiers: ["cmd", "shift"], key: "c" }}
-            />
-          )}
-          <Action
-            title="Refresh"
-            icon={Icon.ArrowClockwise}
-            shortcut={{ modifiers: ["cmd"], key: "r" }}
-            onAction={onRefresh}
-          />
-        </ActionPanel>
-      }
-    />
   );
 }
 
@@ -122,8 +83,8 @@ function filterItems(items: ScenarioItem[], filter: string): ScenarioItem[] {
   return items;
 }
 
-function uniqueBy<T>(arr: T[], keyFn: (item: T) => number): T[] {
-  const seen = new Set<number>();
+function uniqueBy<T, K>(arr: T[], keyFn: (item: T) => K): T[] {
+  const seen = new Set<K>();
   return arr.filter((item) => {
     const key = keyFn(item);
     if (seen.has(key)) return false;

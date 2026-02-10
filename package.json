@@ -34,6 +34,22 @@
       "description": "Your Make.com API token (the value after 'Token ', found in your Make.com profile settings)",
       "type": "password",
       "required": true
+    },
+    {
+      "name": "zone",
+      "title": "Zone",
+      "description": "Your Make.com zone (e.g. eu1.make.com, eu2.make.com, us1.make.com). Found in your Make.com account URL.",
+      "type": "dropdown",
+      "required": true,
+      "default": "eu1.make.com",
+      "data": [
+        { "title": "EU1 (eu1.make.com)", "value": "eu1.make.com" },
+        { "title": "EU2 (eu2.make.com)", "value": "eu2.make.com" },
+        { "title": "US1 (us1.make.com)", "value": "us1.make.com" },
+        { "title": "US2 (us2.make.com)", "value": "us2.make.com" },
+        { "title": "Celonis EU (eu1.make.celonis.com)", "value": "eu1.make.celonis.com" },
+        { "title": "Celonis US (us1.make.celonis.com)", "value": "us1.make.celonis.com" }
+      ]
     }
   ],
   "dependencies": {

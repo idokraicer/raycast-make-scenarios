@@ -1,8 +1,6 @@
 /** Zone is the full domain, e.g. "eu1.make.com" */
 export type Zone = string;
 
-export const DISCOVERY_ZONE: Zone = "eu1.make.com";
-
 export interface Organization {
   id: number;
   name: string;
@@ -25,6 +23,7 @@ export interface Scenario {
   id: number;
   name: string;
   description: string;
+  /** Lowercase 'l' matches the Make.com API response field name */
   islinked: boolean;
   isPaused: boolean;
   teamId: number;

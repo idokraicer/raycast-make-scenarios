@@ -1,12 +1,20 @@
 import { Action, ActionPanel, Color, Icon, List } from "@raycast/api";
 import { useOrganizations } from "./hooks/use-organizations.js";
+import { SkippedOrgsSection } from "./components/skipped-orgs-section.js";
 import { buildOrgScenariosUrl, zoneLabel } from "./utils/url.js";
 
 export default function SearchOrganizations() {
-  const { data: items, isLoading, revalidate } = useOrganizations();
+  const { data: items, isLoading, skippedOrgs, revalidate } = useOrganizations();
 
   return (
     <List isLoading={isLoading} searchBarPlaceholder="Search organizations...">
+      {!isLoading && items.length === 0 && (
+        <List.EmptyView
+          title="No organizations found"
+          description="Check your API token and zone in extension preferences."
+          icon={Icon.MagnifyingGlass}
+        />
+      )}
       {items.map((item) => {
         const { org, team } = item;
         const url = buildOrgScenariosUrl(org.zone, team.id);
@@ -39,6 +47,7 @@ export default function SearchOrganizations() {
           />
         );
       })}
+      <SkippedOrgsSection names={skippedOrgs} />
     </List>
   );
 }
