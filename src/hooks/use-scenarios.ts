@@ -1,4 +1,4 @@
-import { showToast, Toast } from "@raycast/api";
+import { LocalStorage, showToast, Toast } from "@raycast/api";
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
   fetchCurrentUserId,
@@ -10,6 +10,8 @@ import {
 } from "../api/endpoints.js";
 import { Folder, Hook, ScenarioItem } from "../api/types.js";
 import { createPool } from "../utils/concurrency.js";
+
+const CACHE_KEY = "scenarios-cache-v1";
 
 let cachedUserId: number | null = null;
 
@@ -35,25 +37,41 @@ function deduplicateItems(items: ScenarioItem[]): ScenarioItem[] {
   });
 }
 
+interface CachedScenarios {
+  items: ScenarioItem[];
+  skippedOrgs: string[];
+  userId: number;
+}
+
+async function readCache(): Promise<CachedScenarios | null> {
+  try {
+    const raw = await LocalStorage.getItem<string>(CACHE_KEY);
+    if (!raw) return null;
+    return JSON.parse(raw) as CachedScenarios;
+  } catch {
+    return null;
+  }
+}
+
+async function writeCache(data: CachedScenarios): Promise<void> {
+  try {
+    await LocalStorage.setItem(CACHE_KEY, JSON.stringify(data));
+  } catch {
+    // Cache write failure is non-critical
+  }
+}
+
 export function useScenarios() {
   const [items, setItems] = useState<ScenarioItem[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [skipped, setSkipped] = useState<string[]>([]);
   const abortRef = useRef<AbortController | null>(null);
 
-  const load = useCallback(async () => {
-    abortRef.current?.abort();
-    const abort = new AbortController();
-    abortRef.current = abort;
-    const signal = abort.signal;
+  const fetchFresh = useCallback(
+    async (signal: AbortSignal, background: boolean) => {
+      const skippedOrgs: string[] = [];
+      const freshItems: ScenarioItem[] = [];
 
-    setIsLoading(true);
-    setItems([]);
-    setSkipped([]);
-
-    const skippedOrgs: string[] = [];
-
-    try {
       const myUserId = cachedUserId ?? (await fetchCurrentUserId({ signal }));
       cachedUserId = myUserId;
 
@@ -61,7 +79,10 @@ export function useScenarios() {
       if (signal.aborted) return;
 
       if (orgs.length === 0) {
+        setItems([]);
+        setSkipped([]);
         setIsLoading(false);
+        writeCache({ items: [], skippedOrgs: [], userId: myUserId });
         return;
       }
 
@@ -124,23 +145,47 @@ export function useScenarios() {
               .flatMap((r) => r.value);
 
             if (batch.length > 0) {
-              setItems((prev) =>
-                sortItems(deduplicateItems([...prev, ...batch]), myUserId),
-              );
+              freshItems.push(...batch);
+              if (!background) {
+                setItems(
+                  sortItems(deduplicateItems([...freshItems]), myUserId),
+                );
+              }
             }
           } catch {
             skippedOrgs.push(org.name);
           } finally {
             completedOrgs++;
             if (completedOrgs === orgs.length && !signal.aborted) {
+              const finalItems = sortItems(
+                deduplicateItems(freshItems),
+                myUserId,
+              );
+              setItems(finalItems);
               setIsLoading(false);
-              if (skippedOrgs.length > 0) {
-                setSkipped([...skippedOrgs]);
-              }
+              setSkipped([...skippedOrgs]);
+              writeCache({ items: finalItems, skippedOrgs, userId: myUserId });
             }
           }
         }),
       );
+    },
+    [],
+  );
+
+  // Hard refresh: clears state, shows spinner, progressive load
+  const load = useCallback(async () => {
+    abortRef.current?.abort();
+    const abort = new AbortController();
+    abortRef.current = abort;
+    const signal = abort.signal;
+
+    setIsLoading(true);
+    setItems([]);
+    setSkipped([]);
+
+    try {
+      await fetchFresh(signal, false);
     } catch (err) {
       if (!signal.aborted) {
         setIsLoading(false);
@@ -151,12 +196,45 @@ export function useScenarios() {
         });
       }
     }
-  }, []);
+  }, [fetchFresh]);
 
+  // Initial mount: try cache first, then background refresh
   useEffect(() => {
-    load();
-    return () => abortRef.current?.abort();
-  }, [load]);
+    const abort = new AbortController();
+    abortRef.current = abort;
+    const signal = abort.signal;
+
+    readCache().then((cached) => {
+      if (signal.aborted) return;
+
+      if (cached) {
+        // Show cached data instantly — keep isLoading=true so the
+        // loading bar stays visible while background refresh runs
+        cachedUserId = cached.userId;
+        setItems(cached.items);
+        setSkipped(cached.skippedOrgs);
+        // Background refresh; loading bar disappears when it completes
+        fetchFresh(signal, true).catch(() => {
+          // Background refresh failed — show cached data, hide loading bar
+          setIsLoading(false);
+        });
+      } else {
+        // No cache — normal progressive load with spinner
+        fetchFresh(signal, false).catch((err) => {
+          if (!signal.aborted) {
+            setIsLoading(false);
+            showToast({
+              style: Toast.Style.Failure,
+              title: "Failed to load scenarios",
+              message: err instanceof Error ? err.message : String(err),
+            });
+          }
+        });
+      }
+    });
+
+    return () => abort.abort();
+  }, [fetchFresh]);
 
   return { data: items, isLoading, skippedOrgs: skipped, revalidate: load };
 }
