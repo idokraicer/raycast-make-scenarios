@@ -14,11 +14,13 @@ export function ScenarioListItem({
   const isActive = !scenario.isPaused;
 
   const subtitle = folder ? `${team.name} / ${folder.name}` : team.name;
+  const keywords = webhookUrl ? [webhookUrl.split("?")[0]] : undefined;
 
   return (
     <List.Item
       title={scenario.name}
       subtitle={subtitle}
+      keywords={keywords}
       icon={{
         source: isActive ? Icon.CircleFilled : Icon.CircleDisabled,
         tintColor: isActive ? Color.Green : Color.SecondaryText,
