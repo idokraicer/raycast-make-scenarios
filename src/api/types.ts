@@ -43,6 +43,22 @@ export interface Folder {
   name: string;
 }
 
+export interface ScenarioLog {
+  imtId: string;
+  id: number;
+  timestamp: string;
+  duration: number;
+  operations: number;
+  transfer: number;
+  centicredits: number;
+  organizationId: number;
+  teamId: number;
+  status: number;
+  type: string;
+  authorId: number;
+  instant: boolean;
+}
+
 export interface ScenarioItem {
   scenario: Scenario;
   team: Team;

@@ -1,6 +1,15 @@
 import { getPreferenceValues } from "@raycast/api";
 import { apiFetch, apiFetchAllPages, FetchOptions } from "./client.js";
-import { Folder, Hook, Organization, Scenario, Team, Zone } from "./types.js";
+import {
+  Folder,
+  Hook,
+  Organization,
+  Scenario,
+  ScenarioLog,
+  ScenarioUser,
+  Team,
+  Zone,
+} from "./types.js";
 
 function getDiscoveryZone(): Zone {
   return getPreferenceValues<{ zone: Zone }>().zone;
@@ -94,4 +103,37 @@ export async function fetchFolders(
     },
     "scenariosFolders",
   );
+}
+
+export async function fetchUsers(
+  zone: Zone,
+  teamId: number,
+  options?: SignalOption,
+): Promise<ScenarioUser[]> {
+  return apiFetchAllPages<ScenarioUser>(
+    {
+      zone,
+      path: "/users",
+      params: { teamId: String(teamId) },
+      signal: options?.signal,
+    },
+    "users",
+  );
+}
+
+export async function fetchScenarioLogs(
+  zone: Zone,
+  scenarioId: number,
+  options?: SignalOption,
+): Promise<ScenarioLog[]> {
+  const data = await apiFetch<{ scenarioLogs: ScenarioLog[] }>({
+    zone,
+    path: `/scenarios/${scenarioId}/logs`,
+    params: {
+      "pg[sortDir]": "desc",
+      "pg[limit]": "50",
+    },
+    signal: options?.signal,
+  });
+  return data.scenarioLogs;
 }

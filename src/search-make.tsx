@@ -3,6 +3,7 @@ import { useState } from "react";
 import { useOrganizations } from "./hooks/use-organizations.js";
 import { useScenarios } from "./hooks/use-scenarios.js";
 import { ScenarioListItem } from "./components/scenario-list-item.js";
+import { OrgScenariosView } from "./components/org-scenarios-view.js";
 import { SkippedOrgsSection } from "./components/skipped-orgs-section.js";
 import { buildOrgScenariosUrl, zoneLabel } from "./utils/url.js";
 
@@ -84,6 +85,20 @@ export default function SearchMake() {
                 actions={
                   <ActionPanel>
                     <Action.OpenInBrowser title="Open Scenarios" url={url} />
+                    <Action.Push
+                      title="View Scenarios"
+                      icon={Icon.List}
+                      shortcut={{ key: "tab", modifiers: [] }}
+                      target={
+                        <OrgScenariosView
+                          org={org}
+                          scenarios={scenarios.data.filter(
+                            (s) => s.org.id === org.id,
+                          )}
+                          onRefresh={revalidate}
+                        />
+                      }
+                    />
                     <Action.CopyToClipboard
                       title="Copy URL"
                       content={url}

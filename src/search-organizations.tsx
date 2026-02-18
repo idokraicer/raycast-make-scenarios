@@ -1,26 +1,35 @@
 import { Action, ActionPanel, Color, Icon, List } from "@raycast/api";
 import { useOrganizations } from "./hooks/use-organizations.js";
+import { useScenarios } from "./hooks/use-scenarios.js";
+import { OrgScenariosView } from "./components/org-scenarios-view.js";
 import { SkippedOrgsSection } from "./components/skipped-orgs-section.js";
 import { buildOrgScenariosUrl, zoneLabel } from "./utils/url.js";
 
 export default function SearchOrganizations() {
-  const {
-    data: items,
-    isLoading,
-    skippedOrgs,
-    revalidate,
-  } = useOrganizations();
+  const orgs = useOrganizations();
+  const scenarios = useScenarios();
+
+  const isLoading = orgs.isLoading || scenarios.isLoading;
+
+  function revalidate() {
+    orgs.revalidate();
+    scenarios.revalidate();
+  }
+
+  const allSkipped = [
+    ...new Set([...orgs.skippedOrgs, ...scenarios.skippedOrgs]),
+  ];
 
   return (
     <List isLoading={isLoading} searchBarPlaceholder="Search organizations...">
-      {!isLoading && items.length === 0 && (
+      {!isLoading && orgs.data.length === 0 && (
         <List.EmptyView
           title="No organizations found"
           description="Check your API token and zone in extension preferences."
           icon={Icon.MagnifyingGlass}
         />
       )}
-      {items.map((item) => {
+      {orgs.data.map((item) => {
         const { org, team } = item;
         const url = buildOrgScenariosUrl(org.zone, team.id);
 
@@ -36,6 +45,20 @@ export default function SearchOrganizations() {
             actions={
               <ActionPanel>
                 <Action.OpenInBrowser title="Open Scenarios" url={url} />
+                <Action.Push
+                  title="View Scenarios"
+                  icon={Icon.List}
+                  shortcut={{ key: "tab", modifiers: [] }}
+                  target={
+                    <OrgScenariosView
+                      org={org}
+                      scenarios={scenarios.data.filter(
+                        (s) => s.org.id === org.id,
+                      )}
+                      onRefresh={revalidate}
+                    />
+                  }
+                />
                 <Action.CopyToClipboard
                   title="Copy URL"
                   content={url}
@@ -52,7 +75,7 @@ export default function SearchOrganizations() {
           />
         );
       })}
-      <SkippedOrgsSection names={skippedOrgs} />
+      <SkippedOrgsSection names={allSkipped} />
     </List>
   );
 }

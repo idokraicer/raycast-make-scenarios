@@ -1,6 +1,7 @@
 import { Action, ActionPanel, Color, Icon, List } from "@raycast/api";
 import { ScenarioItem } from "../api/types.js";
 import { buildScenarioUrl, zoneLabel } from "../utils/url.js";
+import { ScenarioLogsView } from "./scenario-logs-view.js";
 
 export function ScenarioListItem({
   item,
@@ -32,6 +33,12 @@ export function ScenarioListItem({
       actions={
         <ActionPanel>
           <Action.OpenInBrowser title="Open in Make.com" url={url} />
+          <Action.Push
+            title="View Execution Logs"
+            icon={Icon.Clock}
+            shortcut={{ key: "tab", modifiers: [] }}
+            target={<ScenarioLogsView item={item} onRefresh={onRefresh} />}
+          />
           <Action.CopyToClipboard
             title="Copy URL"
             content={url}
