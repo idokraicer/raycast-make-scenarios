@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
-import { parseSearchText, filterOrgs } from "./search-filter.js";
+import { parseSearchText, filterOrgs, parseDropdownFilter, applyDropdownFilter } from "./search-filter.js";
 import type { OrgTeamItem } from "../hooks/use-organizations.js";
+import type { ScenarioItem } from "../api/types.js";
 
 function makeOrg(name: string, id = 1): OrgTeamItem {
   return {
@@ -118,9 +119,6 @@ describe("filterOrgs", () => {
     expect(result[0].org.name).toBe("Acme Corp");
   });
 });
-
-import { parseDropdownFilter, applyDropdownFilter } from "./search-filter.js";
-import type { ScenarioItem } from "../api/types.js";
 
 function makeScenarioItem(overrides: {
   name?: string;
