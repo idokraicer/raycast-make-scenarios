@@ -1,6 +1,10 @@
 import { ScenarioItem } from "../api/types.js";
 
-export function scenarioKey(zone: string, orgId: number, scenarioId: number): string {
+export function scenarioKey(
+  zone: string,
+  orgId: number,
+  scenarioId: number,
+): string {
   return `${zone}-${orgId}-${scenarioId}`;
 }
 

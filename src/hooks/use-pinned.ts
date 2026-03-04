@@ -4,8 +4,11 @@ import { useCallback } from "react";
 const STORAGE_KEY = "pinned-scenario-ids";
 
 export function usePinned() {
-  const { value: pinnedIds = [], setValue: setPinnedIds, isLoading } =
-    useLocalStorage<string[]>(STORAGE_KEY, []);
+  const {
+    value: pinnedIds = [],
+    setValue: setPinnedIds,
+    isLoading,
+  } = useLocalStorage<string[]>(STORAGE_KEY, []);
 
   const isPinned = useCallback(
     (id: string) => pinnedIds.includes(id),

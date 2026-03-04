@@ -25,7 +25,11 @@ export default function SearchMake() {
   const [dropdownValue, setDropdownValue] = useState("type:all");
   const [searchText, setSearchText] = useState("");
 
-  const isLoading = orgs.isLoading || scenarios.isLoading || pinned.isLoading || recents.isLoading;
+  const isLoading =
+    orgs.isLoading ||
+    scenarios.isLoading ||
+    pinned.isLoading ||
+    recents.isLoading;
 
   const filter = parseDropdownFilter(dropdownValue);
   const parsed = parseSearchText(
@@ -35,8 +39,11 @@ export default function SearchMake() {
   const { orgPrefix } = parsed;
 
   // Determine what to show based on filter
-  const showScenarios = filter.kind !== "type" || filter.value !== "organizations";
-  const showOrgs = filter.kind === "type" && (filter.value === "all" || filter.value === "organizations");
+  const showScenarios =
+    filter.kind !== "type" || filter.value !== "organizations";
+  const showOrgs =
+    filter.kind === "type" &&
+    (filter.value === "all" || filter.value === "organizations");
 
   // Apply dropdown filter to scenarios
   const filteredScenarios = useMemo(
@@ -45,10 +52,14 @@ export default function SearchMake() {
   );
 
   // Split scenarios into pinned, recent, and rest
-  const pinnedSet = useMemo(() => new Set(pinned.pinnedIds), [pinned.pinnedIds]);
+  const pinnedSet = useMemo(
+    () => new Set(pinned.pinnedIds),
+    [pinned.pinnedIds],
+  );
 
   const pinnedScenarios = useMemo(
-    () => filteredScenarios.filter((item) => pinnedSet.has(scenarioItemKey(item))),
+    () =>
+      filteredScenarios.filter((item) => pinnedSet.has(scenarioItemKey(item))),
     [filteredScenarios, pinnedSet],
   );
 
@@ -123,15 +134,14 @@ export default function SearchMake() {
       onSearchTextChange={setSearchText}
       filtering={orgPrefix ? false : { keepSectionOrder: true }}
       searchBarAccessory={
-        <List.Dropdown
-          tooltip="Filter"
-          onChange={setDropdownValue}
-          storeValue
-        >
+        <List.Dropdown tooltip="Filter" onChange={setDropdownValue} storeValue>
           <List.Dropdown.Section title="Type">
             <List.Dropdown.Item title="All" value="type:all" />
             <List.Dropdown.Item title="Scenarios" value="type:scenarios" />
-            <List.Dropdown.Item title="Organizations" value="type:organizations" />
+            <List.Dropdown.Item
+              title="Organizations"
+              value="type:organizations"
+            />
           </List.Dropdown.Section>
           <List.Dropdown.Section title="Status">
             <List.Dropdown.Item title="Active Only" value="status:active" />
@@ -159,31 +169,25 @@ export default function SearchMake() {
         />
       )}
       {showScenarios && pinnedScenarios.length > 0 && (
-        <List.Section
-          title="Pinned"
-          subtitle={String(pinnedScenarios.length)}
-        >
+        <List.Section title="Pinned" subtitle={String(pinnedScenarios.length)}>
           {pinnedScenarios.map(renderScenarioItem)}
         </List.Section>
       )}
       {showScenarios && recentScenarios.length > 0 && (
-        <List.Section
-          title="Recent"
-          subtitle={String(recentScenarios.length)}
-        >
+        <List.Section title="Recent" subtitle={String(recentScenarios.length)}>
           {recentScenarios.map(renderScenarioItem)}
         </List.Section>
       )}
       {showScenarios && (
-        <List.Section
-          title="Scenarios"
-          subtitle={String(restScenarios.length)}
-        >
+        <List.Section title="Scenarios" subtitle={String(restScenarios.length)}>
           {restScenarios.map(renderScenarioItem)}
         </List.Section>
       )}
       {showOrgs && (
-        <List.Section title="Organizations" subtitle={String(filteredOrgs.length)}>
+        <List.Section
+          title="Organizations"
+          subtitle={String(filteredOrgs.length)}
+        >
           {filteredOrgs.map((item) => {
             const { org, team } = item;
             const url = buildOrgScenariosUrl(org.zone, team.id);

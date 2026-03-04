@@ -33,7 +33,9 @@ export function ScenarioListItem({
         tintColor: isActive ? Color.Green : Color.SecondaryText,
       }}
       accessories={[
-        ...(isPinned ? [{ icon: { source: Icon.Star, tintColor: Color.Yellow } }] : []),
+        ...(isPinned
+          ? [{ icon: { source: Icon.Star, tintColor: Color.Yellow } }]
+          : []),
         { text: org.name },
         { tag: { value: zoneLabel(org.zone), color: Color.Blue } },
       ]}

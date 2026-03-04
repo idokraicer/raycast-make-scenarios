@@ -1,5 +1,10 @@
 import { describe, it, expect } from "vitest";
-import { parseSearchText, filterOrgs, parseDropdownFilter, applyDropdownFilter } from "./search-filter.js";
+import {
+  parseSearchText,
+  filterOrgs,
+  parseDropdownFilter,
+  applyDropdownFilter,
+} from "./search-filter.js";
 import type { OrgTeamItem } from "../hooks/use-organizations.js";
 import type { ScenarioItem } from "../api/types.js";
 
@@ -19,8 +24,12 @@ describe("parseSearchText", () => {
   });
 
   it("preserves dropdown filter when no prefix", () => {
-    expect(parseSearchText("test", "scenarios").effectiveFilter).toBe("scenarios");
-    expect(parseSearchText("test", "organizations").effectiveFilter).toBe("organizations");
+    expect(parseSearchText("test", "scenarios").effectiveFilter).toBe(
+      "scenarios",
+    );
+    expect(parseSearchText("test", "organizations").effectiveFilter).toBe(
+      "organizations",
+    );
   });
 
   it("detects > prefix and overrides filter to organizations", () => {
@@ -120,13 +129,15 @@ describe("filterOrgs", () => {
   });
 });
 
-function makeScenarioItem(overrides: {
-  name?: string;
-  isPaused?: boolean;
-  orgId?: number;
-  orgName?: string;
-  scenarioId?: number;
-} = {}): ScenarioItem {
+function makeScenarioItem(
+  overrides: {
+    name?: string;
+    isPaused?: boolean;
+    orgId?: number;
+    orgName?: string;
+    scenarioId?: number;
+  } = {},
+): ScenarioItem {
   return {
     scenario: {
       id: overrides.scenarioId ?? 1,
@@ -141,7 +152,11 @@ function makeScenarioItem(overrides: {
       updatedByUser: null,
     },
     team: { id: 1, name: "Default", organizationId: overrides.orgId ?? 1 },
-    org: { id: overrides.orgId ?? 1, name: overrides.orgName ?? "Acme", zone: "eu1.make.com" },
+    org: {
+      id: overrides.orgId ?? 1,
+      name: overrides.orgName ?? "Acme",
+      zone: "eu1.make.com",
+    },
     folder: null,
     webhookUrl: null,
   };
@@ -186,29 +201,59 @@ describe("parseDropdownFilter", () => {
 
 describe("applyDropdownFilter", () => {
   const scenarios: ScenarioItem[] = [
-    makeScenarioItem({ scenarioId: 1, name: "Active One", isPaused: false, orgId: 1, orgName: "Acme" }),
-    makeScenarioItem({ scenarioId: 2, name: "Paused One", isPaused: true, orgId: 1, orgName: "Acme" }),
-    makeScenarioItem({ scenarioId: 3, name: "Active Two", isPaused: false, orgId: 2, orgName: "Beta" }),
+    makeScenarioItem({
+      scenarioId: 1,
+      name: "Active One",
+      isPaused: false,
+      orgId: 1,
+      orgName: "Acme",
+    }),
+    makeScenarioItem({
+      scenarioId: 2,
+      name: "Paused One",
+      isPaused: true,
+      orgId: 1,
+      orgName: "Acme",
+    }),
+    makeScenarioItem({
+      scenarioId: 3,
+      name: "Active Two",
+      isPaused: false,
+      orgId: 2,
+      orgName: "Beta",
+    }),
   ];
 
   it("type:all returns all scenarios", () => {
-    const result = applyDropdownFilter(scenarios, { kind: "type", value: "all" });
+    const result = applyDropdownFilter(scenarios, {
+      kind: "type",
+      value: "all",
+    });
     expect(result).toHaveLength(3);
   });
 
   it("type:scenarios returns all scenarios (no filtering by type)", () => {
-    const result = applyDropdownFilter(scenarios, { kind: "type", value: "scenarios" });
+    const result = applyDropdownFilter(scenarios, {
+      kind: "type",
+      value: "scenarios",
+    });
     expect(result).toHaveLength(3);
   });
 
   it("status:active filters to non-paused", () => {
-    const result = applyDropdownFilter(scenarios, { kind: "status", value: "active" });
+    const result = applyDropdownFilter(scenarios, {
+      kind: "status",
+      value: "active",
+    });
     expect(result).toHaveLength(2);
     expect(result.every((s) => !s.scenario.isPaused)).toBe(true);
   });
 
   it("status:paused filters to paused", () => {
-    const result = applyDropdownFilter(scenarios, { kind: "status", value: "paused" });
+    const result = applyDropdownFilter(scenarios, {
+      kind: "status",
+      value: "paused",
+    });
     expect(result).toHaveLength(1);
     expect(result[0].scenario.name).toBe("Paused One");
   });
