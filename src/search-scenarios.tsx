@@ -1,12 +1,17 @@
 import { Icon, List } from "@raycast/api";
 import { useMemo, useState } from "react";
 import { useScenarios } from "./hooks/use-scenarios.js";
+import { usePinned } from "./hooks/use-pinned.js";
+import { useRecents } from "./hooks/use-recents.js";
 import { ScenarioItem, Team } from "./api/types.js";
 import { ScenarioListItem } from "./components/scenario-list-item.js";
 import { SkippedOrgsSection } from "./components/skipped-orgs-section.js";
+import { scenarioItemKey } from "./utils/scenario-key.js";
 
 export default function SearchScenarios() {
   const { data: items, isLoading, skippedOrgs, revalidate } = useScenarios();
+  const pinned = usePinned();
+  const recents = useRecents();
   const [filter, setFilter] = useState<string>("all");
 
   const { orgs, teams } = useMemo(() => {
@@ -55,13 +60,19 @@ export default function SearchScenarios() {
           icon={Icon.MagnifyingGlass}
         />
       )}
-      {filtered.map((item) => (
-        <ScenarioListItem
-          key={`${item.org.zone}-${item.org.id}-${item.team.id}-${item.scenario.id}`}
-          item={item}
-          onRefresh={revalidate}
-        />
-      ))}
+      {filtered.map((item) => {
+        const key = scenarioItemKey(item);
+        return (
+          <ScenarioListItem
+            key={`${item.org.zone}-${item.org.id}-${item.team.id}-${item.scenario.id}`}
+            item={item}
+            isPinned={pinned.isPinned(key)}
+            onTogglePin={() => pinned.togglePin(key)}
+            onVisit={() => recents.recordVisit(key)}
+            onRefresh={revalidate}
+          />
+        );
+      })}
       <SkippedOrgsSection names={skippedOrgs} />
     </List>
   );
