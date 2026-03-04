@@ -1,13 +1,19 @@
-import { Action, ActionPanel, Color, Icon, List } from "@raycast/api";
+import { Action, ActionPanel, Color, Icon, Keyboard, List } from "@raycast/api";
 import { ScenarioItem } from "../api/types.js";
 import { buildScenarioUrl, zoneLabel } from "../utils/url.js";
 import { ScenarioLogsView } from "./scenario-logs-view.js";
 
 export function ScenarioListItem({
   item,
+  isPinned,
+  onTogglePin,
+  onVisit,
   onRefresh,
 }: {
   item: ScenarioItem;
+  isPinned: boolean;
+  onTogglePin: () => void;
+  onVisit: () => void;
   onRefresh: () => void;
 }) {
   const { scenario, team, org, folder, webhookUrl } = item;
@@ -27,17 +33,29 @@ export function ScenarioListItem({
         tintColor: isActive ? Color.Green : Color.SecondaryText,
       }}
       accessories={[
+        ...(isPinned ? [{ icon: { source: Icon.Star, tintColor: Color.Yellow } }] : []),
         { text: org.name },
         { tag: { value: zoneLabel(org.zone), color: Color.Blue } },
       ]}
       actions={
         <ActionPanel>
-          <Action.OpenInBrowser title="Open in Make.com" url={url} />
+          <Action.OpenInBrowser
+            title="Open in Make.com"
+            url={url}
+            onOpen={() => onVisit()}
+          />
           <Action.Push
             title="View Execution Logs"
             icon={Icon.Clock}
             shortcut={{ key: "tab", modifiers: [] }}
             target={<ScenarioLogsView item={item} onRefresh={onRefresh} />}
+            onPush={() => onVisit()}
+          />
+          <Action
+            title={isPinned ? "Unpin Scenario" : "Pin Scenario"}
+            icon={isPinned ? Icon.StarDisabled : Icon.Star}
+            shortcut={Keyboard.Shortcut.Common.Pin}
+            onAction={onTogglePin}
           />
           <Action.CopyToClipboard
             title="Copy URL"

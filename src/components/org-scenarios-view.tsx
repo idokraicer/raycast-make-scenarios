@@ -2,14 +2,21 @@ import { Icon, List } from "@raycast/api";
 import { useMemo, useState } from "react";
 import { Organization, ScenarioItem, Team } from "../api/types.js";
 import { ScenarioListItem } from "./scenario-list-item.js";
+import { scenarioItemKey } from "../utils/scenario-key.js";
 
 export function OrgScenariosView({
   org,
   scenarios,
+  isPinned,
+  onTogglePin,
+  onVisit,
   onRefresh,
 }: {
   org: Organization;
   scenarios: ScenarioItem[];
+  isPinned: (key: string) => boolean;
+  onTogglePin: (key: string) => void;
+  onVisit: (key: string) => void;
   onRefresh: () => void;
 }) {
   const [teamFilter, setTeamFilter] = useState<string>("all");
@@ -56,13 +63,19 @@ export function OrgScenariosView({
           icon={Icon.MagnifyingGlass}
         />
       )}
-      {filtered.map((item) => (
-        <ScenarioListItem
-          key={`${item.org.zone}-${item.team.id}-${item.scenario.id}`}
-          item={item}
-          onRefresh={onRefresh}
-        />
-      ))}
+      {filtered.map((item) => {
+        const key = scenarioItemKey(item);
+        return (
+          <ScenarioListItem
+            key={`${item.org.zone}-${item.team.id}-${item.scenario.id}`}
+            item={item}
+            isPinned={isPinned(key)}
+            onTogglePin={() => onTogglePin(key)}
+            onVisit={() => onVisit(key)}
+            onRefresh={onRefresh}
+          />
+        );
+      })}
     </List>
   );
 }
