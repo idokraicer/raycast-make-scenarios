@@ -6,3 +6,6 @@ raycast-env.d.ts
 
 # dora code context index
 .dora/
+
+# git worktrees
+.worktrees/
