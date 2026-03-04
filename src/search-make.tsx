@@ -1,5 +1,5 @@
 import { Action, ActionPanel, Color, Icon, List } from "@raycast/api";
-import { useMemo, useState } from "react";
+import { useCallback, useMemo, useState } from "react";
 import { useOrganizations } from "./hooks/use-organizations.js";
 import { useScenarios } from "./hooks/use-scenarios.js";
 import { usePinned } from "./hooks/use-pinned.js";
@@ -35,60 +35,62 @@ export default function SearchMake() {
     () => parseDropdownFilter(dropdownValue),
     [dropdownValue],
   );
-  const parsed = parseSearchText(
-    searchText,
-    filter.kind === "type" ? filter.value : "all",
+
+  const parsed = useMemo(
+    () =>
+      parseSearchText(
+        searchText,
+        filter.kind === "type" ? filter.value : "all",
+      ),
+    [searchText, filter],
   );
   const { orgPrefix } = parsed;
 
-  // Determine what to show based on filter
   const showScenarios =
     filter.kind !== "type" || filter.value !== "organizations";
   const showOrgs =
     filter.kind === "type" &&
     (filter.value === "all" || filter.value === "organizations");
 
-  // Apply dropdown filter to scenarios
-  const filteredScenarios = useMemo(
-    () => applyDropdownFilter(scenarios.data, filter),
-    [scenarios.data, filter],
-  );
+  // Apply dropdown filter and pre-compute keys once
+  const itemsWithKeys = useMemo(() => {
+    const filtered = applyDropdownFilter(scenarios.data, filter);
+    return filtered.map((item) => ({
+      item,
+      key: scenarioItemKey(item),
+    }));
+  }, [scenarios.data, filter]);
 
-  // Split scenarios into pinned, recent, and rest
+  // Split into pinned, recent, rest using pre-computed keys
   const pinnedSet = useMemo(
     () => new Set(pinned.pinnedIds),
     [pinned.pinnedIds],
   );
 
   const pinnedScenarios = useMemo(
-    () =>
-      filteredScenarios.filter((item) => pinnedSet.has(scenarioItemKey(item))),
-    [filteredScenarios, pinnedSet],
+    () => itemsWithKeys.filter(({ key }) => pinnedSet.has(key)),
+    [itemsWithKeys, pinnedSet],
   );
 
   const recentScenarios = useMemo(() => {
     const recentMap = new Map<string, number>();
     recents.recentIds.forEach((id, index) => recentMap.set(id, index));
 
-    return filteredScenarios
-      .filter((item) => {
-        const key = scenarioItemKey(item);
-        return recentMap.has(key) && !pinnedSet.has(key);
-      })
-      .sort((a, b) => {
-        const aIdx = recentMap.get(scenarioItemKey(a)) ?? Infinity;
-        const bIdx = recentMap.get(scenarioItemKey(b)) ?? Infinity;
-        return aIdx - bIdx;
-      });
-  }, [filteredScenarios, recents.recentIds, pinnedSet]);
+    return itemsWithKeys
+      .filter(({ key }) => recentMap.has(key) && !pinnedSet.has(key))
+      .sort(
+        (a, b) =>
+          (recentMap.get(a.key) ?? Infinity) -
+          (recentMap.get(b.key) ?? Infinity),
+      );
+  }, [itemsWithKeys, recents.recentIds, pinnedSet]);
 
   const restScenarios = useMemo(() => {
     const recentSet = new Set(recents.recentIds);
-    return filteredScenarios.filter((item) => {
-      const key = scenarioItemKey(item);
-      return !pinnedSet.has(key) && !recentSet.has(key);
-    });
-  }, [filteredScenarios, pinnedSet, recents.recentIds]);
+    return itemsWithKeys.filter(
+      ({ key }) => !pinnedSet.has(key) && !recentSet.has(key),
+    );
+  }, [itemsWithKeys, pinnedSet, recents.recentIds]);
 
   // Deduplicate orgs for the dropdown
   const uniqueOrgs = useMemo(() => {
@@ -101,23 +103,43 @@ export default function SearchMake() {
     return [...seen.values()].sort((a, b) => a.name.localeCompare(b.name));
   }, [scenarios.data]);
 
-  const filteredOrgs = filterOrgs(orgs.data, parsed);
+  // Pre-group scenarios by org ID (avoids 200+ filter passes per render)
+  const scenariosByOrg = useMemo(() => {
+    const map = new Map<number, ScenarioItem[]>();
+    for (const item of scenarios.data) {
+      const list = map.get(item.org.id);
+      if (list) list.push(item);
+      else map.set(item.org.id, [item]);
+    }
+    return map;
+  }, [scenarios.data]);
 
-  function revalidate() {
+  const filteredOrgs = useMemo(
+    () => filterOrgs(orgs.data, parsed),
+    [orgs.data, parsed],
+  );
+
+  const revalidate = useCallback(() => {
     orgs.revalidate();
     scenarios.revalidate();
-  }
+  }, [orgs.revalidate, scenarios.revalidate]);
 
-  const allSkipped = [
-    ...new Set([...scenarios.skippedOrgs, ...orgs.skippedOrgs]),
-  ];
+  const allSkipped = useMemo(
+    () => [...new Set([...scenarios.skippedOrgs, ...orgs.skippedOrgs])],
+    [scenarios.skippedOrgs, orgs.skippedOrgs],
+  );
 
   const hasResults =
-    (showScenarios && filteredScenarios.length > 0) ||
+    (showScenarios && itemsWithKeys.length > 0) ||
     (showOrgs && filteredOrgs.length > 0);
 
-  function renderScenarioItem(item: ScenarioItem) {
-    const key = scenarioItemKey(item);
+  function renderScenarioItem({
+    item,
+    key,
+  }: {
+    item: ScenarioItem;
+    key: string;
+  }) {
     return (
       <ScenarioListItem
         key={`sc-${key}`}
@@ -214,9 +236,7 @@ export default function SearchMake() {
                       target={
                         <OrgScenariosView
                           org={org}
-                          scenarios={scenarios.data.filter(
-                            (s) => s.org.id === org.id,
-                          )}
+                          scenarios={scenariosByOrg.get(org.id) ?? []}
                           isPinned={pinned.isPinned}
                           onTogglePin={pinned.togglePin}
                           onVisit={recents.recordVisit}

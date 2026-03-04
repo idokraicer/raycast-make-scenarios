@@ -1,9 +1,10 @@
 import { Action, ActionPanel, Color, Icon, Keyboard, List } from "@raycast/api";
+import { memo } from "react";
 import { ScenarioItem } from "../api/types.js";
 import { buildScenarioUrl, zoneLabel } from "../utils/url.js";
 import { ScenarioLogsView } from "./scenario-logs-view.js";
 
-export function ScenarioListItem({
+export const ScenarioListItem = memo(function ScenarioListItem({
   item,
   isPinned,
   onTogglePin,
@@ -81,4 +82,4 @@ export function ScenarioListItem({
       }
     />
   );
-}
+});
