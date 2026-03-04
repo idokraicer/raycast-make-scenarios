@@ -31,7 +31,10 @@ export default function SearchMake() {
     pinned.isLoading ||
     recents.isLoading;
 
-  const filter = parseDropdownFilter(dropdownValue);
+  const filter = useMemo(
+    () => parseDropdownFilter(dropdownValue),
+    [dropdownValue],
+  );
   const parsed = parseSearchText(
     searchText,
     filter.kind === "type" ? filter.value : "all",

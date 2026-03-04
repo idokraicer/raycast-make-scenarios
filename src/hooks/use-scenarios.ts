@@ -16,7 +16,7 @@ const CACHE_KEY = "scenarios-cache-v1";
 let cachedUserId: number | null = null;
 
 function sortItems(items: ScenarioItem[], myUserId: number): ScenarioItem[] {
-  return [...items].sort((a, b) => {
+  return items.sort((a, b) => {
     const aIsMine = a.scenario.updatedByUser?.id === myUserId ? 0 : 1;
     const bIsMine = b.scenario.updatedByUser?.id === myUserId ? 0 : 1;
     if (aIsMine !== bIsMine) return aIsMine - bIsMine;
@@ -86,8 +86,9 @@ export function useScenarios() {
         return;
       }
 
-      const pool = createPool(6);
+      const pool = createPool(3);
       let completedOrgs = 0;
+      let lastProgressUpdate = 0;
 
       await Promise.allSettled(
         orgs.map(async (org) => {
@@ -147,9 +148,11 @@ export function useScenarios() {
             if (batch.length > 0) {
               freshItems.push(...batch);
               if (!background) {
-                setItems(
-                  sortItems(deduplicateItems([...freshItems]), myUserId),
-                );
+                const now = Date.now();
+                if (now - lastProgressUpdate > 500) {
+                  lastProgressUpdate = now;
+                  setItems(sortItems(deduplicateItems(freshItems), myUserId));
+                }
               }
             }
           } catch {

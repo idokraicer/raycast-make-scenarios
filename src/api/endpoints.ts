@@ -28,10 +28,16 @@ export async function fetchCurrentUserId(
   return data.authUser.id;
 }
 
+let cachedOrgs: { data: Organization[]; timestamp: number } | null = null;
+const ORG_CACHE_TTL_MS = 10_000;
+
 export async function fetchOrganizations(
   options?: SignalOption,
 ): Promise<Organization[]> {
-  return apiFetchAllPages<Organization>(
+  if (cachedOrgs && Date.now() - cachedOrgs.timestamp < ORG_CACHE_TTL_MS) {
+    return cachedOrgs.data;
+  }
+  const data = await apiFetchAllPages<Organization>(
     {
       zone: getDiscoveryZone(),
       path: "/organizations",
@@ -39,6 +45,8 @@ export async function fetchOrganizations(
     },
     "organizations",
   );
+  cachedOrgs = { data, timestamp: Date.now() };
+  return data;
 }
 
 export async function fetchTeams(

@@ -55,8 +55,9 @@ export function useOrganizations() {
         return;
       }
 
-      const pool = createPool(6);
+      const pool = createPool(3);
       const allBatches: OrgTeamItem[] = [];
+      let lastProgressUpdate = 0;
 
       await Promise.allSettled(
         orgs.map(async (org) => {
@@ -70,11 +71,13 @@ export function useOrganizations() {
             allBatches.push(...batch);
 
             if (!background) {
-              setItems(
-                [...allBatches].sort((a, b) =>
-                  a.org.name.localeCompare(b.org.name),
-                ),
-              );
+              const now = Date.now();
+              if (now - lastProgressUpdate > 500) {
+                lastProgressUpdate = now;
+                const snapshot = [...allBatches];
+                snapshot.sort((a, b) => a.org.name.localeCompare(b.org.name));
+                setItems(snapshot);
+              }
             }
           } catch {
             skippedOrgs.push(org.name);
