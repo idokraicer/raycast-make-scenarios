@@ -23,12 +23,44 @@ export interface FetchOptions {
   path: string;
   params?: Record<string, string>;
   signal?: AbortSignal;
+  timeoutMs?: number;
 }
 
 const MAX_PAGES = 50;
+const DEFAULT_TIMEOUT_MS = 30_000;
+
+function createTimeoutSignal(timeoutMs: number, signal?: AbortSignal) {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+
+  const abortFromParent = () => controller.abort();
+  if (signal) {
+    if (signal.aborted) {
+      controller.abort();
+    } else {
+      signal.addEventListener("abort", abortFromParent, { once: true });
+    }
+  }
+
+  return {
+    signal: controller.signal,
+    cleanup: () => {
+      clearTimeout(timeoutId);
+      if (signal) {
+        signal.removeEventListener("abort", abortFromParent);
+      }
+    },
+  };
+}
 
 export async function apiFetch<T>(options: FetchOptions): Promise<T> {
-  const { zone, path, params, signal } = options;
+  const {
+    zone,
+    path,
+    params,
+    signal,
+    timeoutMs = DEFAULT_TIMEOUT_MS,
+  } = options;
   const url = new URL(`${baseUrl(zone)}${path}`);
   if (params) {
     for (const [key, value] of Object.entries(params)) {
@@ -36,13 +68,30 @@ export async function apiFetch<T>(options: FetchOptions): Promise<T> {
     }
   }
 
-  const response = await fetch(url.toString(), {
-    headers: {
-      Authorization: getAuthHeader(),
-      "Content-Type": "application/json",
-    },
-    signal,
-  });
+  const timeout = createTimeoutSignal(timeoutMs, signal);
+  let response: Response;
+
+  try {
+    response = await fetch(url.toString(), {
+      headers: {
+        Authorization: getAuthHeader(),
+        "Content-Type": "application/json",
+      },
+      signal: timeout.signal,
+    });
+  } catch (error) {
+    timeout.cleanup();
+
+    if (timeout.signal.aborted) {
+      throw new Error(
+        `Request timed out after ${timeoutMs}ms (${zone}${path})`,
+      );
+    }
+
+    throw error;
+  }
+
+  timeout.cleanup();
 
   if (!response.ok) {
     if (response.status === 401 || response.status === 403) {
@@ -63,6 +112,17 @@ export async function apiFetchAllPages<T>(
   key: string,
 ): Promise<T[]> {
   const allItems: T[] = [];
+  for await (const page of apiFetchAllPagesIterator<T>(options, key)) {
+    allItems.push(...page);
+  }
+
+  return allItems;
+}
+
+export async function* apiFetchAllPagesIterator<T>(
+  options: FetchOptions,
+  key: string,
+): AsyncGenerator<T[], void, void> {
   let offset = 0;
   const limit = 100;
 
@@ -78,11 +138,10 @@ export async function apiFetchAllPages<T>(
     });
     const items = data[key];
     if (!Array.isArray(items)) break;
-    allItems.push(...(items as T[]));
+    const typedItems = items as T[];
+    yield typedItems;
 
     if (items.length < limit) break;
     offset += limit;
   }
-
-  return allItems;
 }

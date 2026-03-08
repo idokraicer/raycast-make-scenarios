@@ -2,7 +2,8 @@ import { Action, ActionPanel, Color, Icon, List } from "@raycast/api";
 import { useCachedPromise } from "@raycast/utils";
 import { useMemo, useState } from "react";
 import { fetchScenarioLogs, fetchUsers } from "../api/endpoints.js";
-import { ScenarioItem, ScenarioLog } from "../api/types.js";
+import { ScenarioLog } from "../api/types.js";
+import { ScenarioRow } from "../catalog/types.js";
 import {
   formatBytes,
   formatDuration,
@@ -24,12 +25,11 @@ export function ScenarioLogsView({
   item,
   onRefresh,
 }: {
-  item: ScenarioItem;
+  item: ScenarioRow;
   onRefresh: () => void;
 }) {
   const [filter, setFilter] = useState<LogFilter>("all");
-  const { scenario, team, org } = item;
-  const url = buildScenarioUrl(org.zone, team.id, scenario.id);
+  const url = buildScenarioUrl(item.zone, item.teamId, item.scenarioId);
 
   const {
     data: logs,
@@ -37,26 +37,25 @@ export function ScenarioLogsView({
     revalidate,
   } = useCachedPromise(
     (zone, scenarioId) => fetchScenarioLogs(zone, scenarioId),
-    [org.zone, scenario.id],
+    [item.zone, item.scenarioId],
   );
 
   const { data: users, isLoading: usersLoading } = useCachedPromise(
     (zone, teamId) => fetchUsers(zone, teamId),
-    [org.zone, team.id],
+    [item.zone, item.teamId],
   );
 
   const userMap = useMemo(() => {
     const map = new Map<number, string>();
     if (users) {
-      for (const u of users) {
-        map.set(u.id, u.name);
+      for (const user of users) {
+        map.set(user.id, user.name);
       }
     }
     return map;
   }, [users]);
 
-  const allLogs = logs ?? [];
-  const filteredLogs = allLogs.filter((log) => {
+  const filteredLogs = (logs ?? []).filter((log) => {
     switch (filter) {
       case "all":
         return true;
@@ -74,12 +73,12 @@ export function ScenarioLogsView({
   return (
     <List
       isLoading={isLoading}
-      navigationTitle={scenario.name}
+      navigationTitle={item.scenarioName}
       searchBarPlaceholder="Filter logs..."
       searchBarAccessory={
         <List.Dropdown
           tooltip="Filter"
-          onChange={(v) => setFilter(v as LogFilter)}
+          onChange={(value) => setFilter(value as LogFilter)}
         >
           <List.Dropdown.Item title="All" value="all" />
           <List.Dropdown.Item title="Executions" value="executions" />
@@ -103,9 +102,9 @@ export function ScenarioLogsView({
       {filteredLogs.map((log) => {
         const authorName = userMap.get(log.authorId);
         const logUrl = buildScenarioLogUrl(
-          org.zone,
-          team.id,
-          scenario.id,
+          item.zone,
+          item.teamId,
+          item.scenarioId,
           log.imtId,
         );
 
@@ -122,6 +121,7 @@ export function ScenarioLogsView({
           if (log.transfer > 0) {
             accessories.push({ text: formatBytes(log.transfer) });
           }
+
           const statusMap: Record<number, { value: string; color: Color }> = {
             1: { value: "Success", color: Color.Green },
             2: { value: "Warning", color: Color.Yellow },
@@ -170,19 +170,15 @@ export function ScenarioLogsView({
           );
         }
 
-        // Non-execution entry (edit, save, etc.)
-        const accessories: List.Item.Accessory[] = [];
-        accessories.push({
-          tag: { value: typeLabel(log.type), color: Color.Blue },
-        });
-
         return (
           <List.Item
             key={log.imtId}
             icon={{ source: Icon.Pencil, tintColor: Color.Blue }}
             title={formatTimestamp(log.timestamp)}
             subtitle={authorName}
-            accessories={accessories}
+            accessories={[
+              { tag: { value: typeLabel(log.type), color: Color.Blue } },
+            ]}
             actions={
               <ActionPanel>
                 <Action.OpenInBrowser

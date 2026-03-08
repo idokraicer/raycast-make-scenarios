@@ -1,45 +1,86 @@
-import { Action, ActionPanel, Color, Icon, List } from "@raycast/api";
-import { useOrganizations } from "./hooks/use-organizations.js";
-import { useScenarios } from "./hooks/use-scenarios.js";
+import {
+  Action,
+  ActionPanel,
+  Color,
+  Icon,
+  List,
+  Toast,
+  showToast,
+} from "@raycast/api";
+import { syncCatalog } from "./catalog/service.js";
+import { OrganizationListRow } from "./catalog/types.js";
 import { OrgScenariosView } from "./components/org-scenarios-view.js";
+import { CatalogSyncSection } from "./components/catalog-sync-section.js";
 import { SkippedOrgsSection } from "./components/skipped-orgs-section.js";
+import { useCatalogSyncStatus } from "./hooks/use-catalog-sync-status.js";
+import { useOrganizationList } from "./hooks/use-organization-list.js";
+import { usePinned } from "./hooks/use-pinned.js";
+import { useRecents } from "./hooks/use-recents.js";
+import { useSkippedOrganizations } from "./hooks/use-skipped-organizations.js";
 import { buildOrgScenariosUrl, zoneLabel } from "./utils/url.js";
+import { useState } from "react";
 
 export default function SearchOrganizations() {
-  const orgs = useOrganizations();
-  const scenarios = useScenarios();
+  const [searchText, setSearchText] = useState("");
+  const organizations = useOrganizationList({ query: searchText });
+  const pinned = usePinned();
+  const recents = useRecents();
+  const syncStatus = useCatalogSyncStatus();
+  const skippedOrgs = useSkippedOrganizations();
 
-  const isLoading = orgs.isLoading || scenarios.isLoading;
-
-  function revalidate() {
-    orgs.revalidate();
-    scenarios.revalidate();
-  }
-
-  const allSkipped = [
-    ...new Set([...orgs.skippedOrgs, ...scenarios.skippedOrgs]),
-  ];
+  const refresh = async () => {
+    try {
+      await syncCatalog({ force: true });
+    } catch (error) {
+      await showToast({
+        style: Toast.Style.Failure,
+        title: "Failed to refresh catalog",
+        message: error instanceof Error ? error.message : String(error),
+      });
+    }
+  };
 
   return (
-    <List isLoading={isLoading} searchBarPlaceholder="Search organizations...">
-      {!isLoading && orgs.data.length === 0 && (
+    <List
+      isLoading={syncStatus.isRunning && organizations.rows.length === 0}
+      searchBarPlaceholder="Search organizations..."
+      onSearchTextChange={setSearchText}
+      throttle
+      pagination={{
+        pageSize: organizations.pageSize,
+        hasMore: organizations.hasMore,
+        onLoadMore: organizations.loadMore,
+      }}
+    >
+      {syncStatus.isRunning && organizations.rows.length === 0 && (
+        <List.EmptyView
+          title={syncStatus.message || "Syncing organizations..."}
+          description={
+            syncStatus.totalOrganizations > 0
+              ? `${syncStatus.completedOrganizations}/${syncStatus.totalOrganizations} organizations, ${syncStatus.completedScenarios} scenarios discovered so far.`
+              : "Building the local catalog for the first time."
+          }
+          icon={Icon.ArrowClockwise}
+        />
+      )}
+      {!syncStatus.isRunning && organizations.rows.length === 0 && (
         <List.EmptyView
           title="No organizations found"
           description="Check your API token and zone in extension preferences."
           icon={Icon.MagnifyingGlass}
         />
       )}
-      {orgs.data.map((item) => {
-        const { org, team } = item;
-        const url = buildOrgScenariosUrl(org.zone, team.id);
+      <CatalogSyncSection status={syncStatus} />
+      {organizations.rows.map((item: OrganizationListRow) => {
+        const url = buildOrgScenariosUrl(item.zone, item.teamId);
 
         return (
           <List.Item
-            key={`${org.id}-${team.id}`}
-            title={org.name}
-            subtitle={team.name}
+            key={`${item.orgKey}-${item.teamKey}`}
+            title={item.orgName}
+            subtitle={item.teamName}
             accessories={[
-              { tag: { value: zoneLabel(org.zone), color: Color.Blue } },
+              { tag: { value: zoneLabel(item.zone), color: Color.Blue } },
             ]}
             icon={Icon.Building}
             actions={
@@ -51,11 +92,12 @@ export default function SearchOrganizations() {
                   shortcut={{ key: "tab", modifiers: [] }}
                   target={
                     <OrgScenariosView
-                      org={org}
-                      scenarios={scenarios.data.filter(
-                        (s) => s.org.id === org.id,
-                      )}
-                      onRefresh={revalidate}
+                      orgKey={item.orgKey}
+                      orgName={item.orgName}
+                      isPinned={pinned.isPinned}
+                      onTogglePin={pinned.togglePin}
+                      onVisit={recents.recordVisit}
+                      onRefresh={refresh}
                     />
                   }
                 />
@@ -68,14 +110,14 @@ export default function SearchOrganizations() {
                   title="Refresh"
                   icon={Icon.ArrowClockwise}
                   shortcut={{ modifiers: ["cmd"], key: "r" }}
-                  onAction={revalidate}
+                  onAction={refresh}
                 />
               </ActionPanel>
             }
           />
         );
       })}
-      <SkippedOrgsSection names={allSkipped} />
+      <SkippedOrgsSection names={skippedOrgs} />
     </List>
   );
 }

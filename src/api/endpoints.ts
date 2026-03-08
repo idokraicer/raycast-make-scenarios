@@ -1,5 +1,10 @@
 import { getPreferenceValues } from "@raycast/api";
-import { apiFetch, apiFetchAllPages, FetchOptions } from "./client.js";
+import {
+  apiFetch,
+  apiFetchAllPages,
+  apiFetchAllPagesIterator,
+  FetchOptions,
+} from "./client.js";
 import {
   Folder,
   Hook,
@@ -15,10 +20,10 @@ function getDiscoveryZone(): Zone {
   return getPreferenceValues<{ zone: Zone }>().zone;
 }
 
-type SignalOption = Pick<FetchOptions, "signal">;
+type RequestOptions = Pick<FetchOptions, "signal" | "timeoutMs">;
 
 export async function fetchCurrentUserId(
-  options?: SignalOption,
+  options?: RequestOptions,
 ): Promise<number> {
   const data = await apiFetch<{ authUser: { id: number } }>({
     zone: getDiscoveryZone(),
@@ -32,7 +37,7 @@ let cachedOrgs: { data: Organization[]; timestamp: number } | null = null;
 const ORG_CACHE_TTL_MS = 10_000;
 
 export async function fetchOrganizations(
-  options?: SignalOption,
+  options?: RequestOptions,
 ): Promise<Organization[]> {
   if (cachedOrgs && Date.now() - cachedOrgs.timestamp < ORG_CACHE_TTL_MS) {
     return cachedOrgs.data;
@@ -52,7 +57,7 @@ export async function fetchOrganizations(
 export async function fetchTeams(
   zone: Zone,
   organizationId: number,
-  options?: SignalOption,
+  options?: RequestOptions,
 ): Promise<Team[]> {
   return apiFetchAllPages<Team>(
     {
@@ -68,9 +73,25 @@ export async function fetchTeams(
 export async function fetchScenarios(
   zone: Zone,
   teamId: number,
-  options?: SignalOption,
+  options?: RequestOptions,
 ): Promise<Scenario[]> {
   return apiFetchAllPages<Scenario>(
+    {
+      zone,
+      path: "/scenarios",
+      params: { teamId: String(teamId) },
+      signal: options?.signal,
+    },
+    "scenarios",
+  );
+}
+
+export function fetchScenarioPages(
+  zone: Zone,
+  teamId: number,
+  options?: RequestOptions,
+): AsyncGenerator<Scenario[], void, void> {
+  return apiFetchAllPagesIterator<Scenario>(
     {
       zone,
       path: "/scenarios",
@@ -84,7 +105,7 @@ export async function fetchScenarios(
 export async function fetchHooks(
   zone: Zone,
   teamId: number,
-  options?: SignalOption,
+  options?: RequestOptions,
 ): Promise<Hook[]> {
   return apiFetchAllPages<Hook>(
     {
@@ -100,7 +121,7 @@ export async function fetchHooks(
 export async function fetchFolders(
   zone: Zone,
   teamId: number,
-  options?: SignalOption,
+  options?: RequestOptions,
 ): Promise<Folder[]> {
   return apiFetchAllPages<Folder>(
     {
@@ -116,7 +137,7 @@ export async function fetchFolders(
 export async function fetchUsers(
   zone: Zone,
   teamId: number,
-  options?: SignalOption,
+  options?: RequestOptions,
 ): Promise<ScenarioUser[]> {
   return apiFetchAllPages<ScenarioUser>(
     {
@@ -132,7 +153,7 @@ export async function fetchUsers(
 export async function fetchScenarioLogs(
   zone: Zone,
   scenarioId: number,
-  options?: SignalOption,
+  options?: RequestOptions,
 ): Promise<ScenarioLog[]> {
   const data = await apiFetch<{ scenarioLogs: ScenarioLog[] }>({
     zone,

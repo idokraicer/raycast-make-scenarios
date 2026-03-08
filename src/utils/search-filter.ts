@@ -1,5 +1,4 @@
-import type { OrgTeamItem } from "../hooks/use-organizations.js";
-import type { ScenarioItem } from "../api/types.js";
+import type { OrganizationListRow, ScenarioRow } from "../catalog/types.js";
 
 export interface SearchParseResult {
   /** Whether the ">" prefix was detected */
@@ -23,20 +22,20 @@ export function parseSearchText(
 }
 
 export function filterOrgs(
-  orgs: OrgTeamItem[],
+  orgs: OrganizationListRow[],
   parsed: SearchParseResult,
-): OrgTeamItem[] {
+): OrganizationListRow[] {
   if (!parsed.orgPrefix) return orgs;
   if (parsed.orgSearchQuery === "") return orgs;
   return orgs.filter((item) =>
-    item.org.name.toLowerCase().includes(parsed.orgSearchQuery),
+    item.orgName.toLowerCase().includes(parsed.orgSearchQuery),
   );
 }
 
 export type DropdownFilter =
   | { kind: "type"; value: "all" | "scenarios" | "organizations" }
   | { kind: "status"; value: "active" | "paused" }
-  | { kind: "org"; value: number };
+  | { kind: "org"; value: string };
 
 export function parseDropdownFilter(raw: string): DropdownFilter {
   if (raw.startsWith("type:")) {
@@ -52,26 +51,26 @@ export function parseDropdownFilter(raw: string): DropdownFilter {
     }
   }
   if (raw.startsWith("org:")) {
-    const id = Number(raw.slice(4));
-    if (!isNaN(id)) {
-      return { kind: "org", value: id };
+    const orgKey = raw.slice(4);
+    if (orgKey) {
+      return { kind: "org", value: orgKey };
     }
   }
   return { kind: "type", value: "all" };
 }
 
 export function applyDropdownFilter(
-  scenarios: ScenarioItem[],
+  scenarios: ScenarioRow[],
   filter: DropdownFilter,
-): ScenarioItem[] {
+): ScenarioRow[] {
   switch (filter.kind) {
     case "type":
       return scenarios;
     case "status":
       return scenarios.filter((s) =>
-        filter.value === "active" ? !s.scenario.isPaused : s.scenario.isPaused,
+        filter.value === "active" ? !s.isPaused : s.isPaused,
       );
     case "org":
-      return scenarios.filter((s) => s.org.id === filter.value);
+      return scenarios.filter((s) => s.orgKey === filter.value);
   }
 }

@@ -1,81 +1,79 @@
 import { Icon, List } from "@raycast/api";
-import { useMemo, useState } from "react";
-import { Organization, ScenarioItem, Team } from "../api/types.js";
+import { useState } from "react";
+import { ScenarioRow } from "../catalog/types.js";
+import { useCatalogFacets } from "../hooks/use-catalog-facets.js";
+import { useOrgScenarioList } from "../hooks/use-org-scenario-list.js";
 import { ScenarioListItem } from "./scenario-list-item.js";
-import { scenarioItemKey } from "../utils/scenario-key.js";
 
 export function OrgScenariosView({
-  org,
-  scenarios,
+  orgKey,
+  orgName,
   isPinned,
   onTogglePin,
   onVisit,
   onRefresh,
 }: {
-  org: Organization;
-  scenarios: ScenarioItem[];
+  orgKey: string;
+  orgName: string;
   isPinned: (key: string) => boolean;
   onTogglePin: (key: string) => void;
   onVisit: (key: string) => void;
   onRefresh: () => void;
 }) {
-  const [teamFilter, setTeamFilter] = useState<string>("all");
-
-  const teams = useMemo(() => {
-    const seen = new Set<number>();
-    return scenarios.reduce<Team[]>((acc, item) => {
-      if (!seen.has(item.team.id)) {
-        seen.add(item.team.id);
-        acc.push(item.team);
-      }
-      return acc;
-    }, []);
-  }, [scenarios]);
-
-  const filtered =
-    teamFilter === "all"
-      ? scenarios
-      : scenarios.filter((i) => i.team.id === Number(teamFilter));
+  const [teamFilter, setTeamFilter] = useState("all");
+  const [searchText, setSearchText] = useState("");
+  const facets = useCatalogFacets();
+  const teams = facets.teamsByOrg[orgKey] ?? [];
+  const scenarios = useOrgScenarioList({
+    orgKey,
+    query: searchText,
+    teamKey: teamFilter === "all" ? undefined : teamFilter,
+  });
 
   return (
     <List
-      navigationTitle={org.name}
-      searchBarPlaceholder={`Search scenarios in ${org.name}...`}
+      isLoading={scenarios.isLoading}
+      navigationTitle={orgName}
+      searchBarPlaceholder={`Search scenarios in ${orgName}...`}
+      onSearchTextChange={setSearchText}
+      throttle
       searchBarAccessory={
         teams.length > 1 ? (
           <List.Dropdown tooltip="Filter by Team" onChange={setTeamFilter}>
             <List.Dropdown.Item title="All Teams" value="all" />
             {teams.map((team) => (
               <List.Dropdown.Item
-                key={team.id}
-                title={team.name}
-                value={String(team.id)}
+                key={team.teamKey}
+                title={team.teamName}
+                value={team.teamKey}
               />
             ))}
           </List.Dropdown>
         ) : undefined
       }
+      pagination={{
+        pageSize: scenarios.pageSize,
+        hasMore: scenarios.hasMore,
+        onLoadMore: scenarios.loadMore,
+      }}
     >
-      {filtered.length === 0 && (
+      {scenarios.rows.length === 0 && (
         <List.EmptyView
           title="No scenarios found"
-          description={`No scenarios in ${org.name}`}
+          description={`No scenarios in ${orgName}`}
           icon={Icon.MagnifyingGlass}
         />
       )}
-      {filtered.map((item) => {
-        const key = scenarioItemKey(item);
-        return (
-          <ScenarioListItem
-            key={`${item.org.zone}-${item.team.id}-${item.scenario.id}`}
-            item={item}
-            isPinned={isPinned(key)}
-            onTogglePin={() => onTogglePin(key)}
-            onVisit={() => onVisit(key)}
-            onRefresh={onRefresh}
-          />
-        );
-      })}
+      {scenarios.rows.map((item: ScenarioRow) => (
+        <ScenarioListItem
+          key={item.key}
+          item={item}
+          isPinned={isPinned(item.key)}
+          onTogglePin={() => onTogglePin(item.key)}
+          onVisit={() => onVisit(item.key)}
+          onRefresh={onRefresh}
+        />
+      ))}
     </List>
   );
 }

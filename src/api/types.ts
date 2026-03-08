@@ -58,11 +58,3 @@ export interface ScenarioLog {
   authorId: number;
   instant: boolean;
 }
-
-export interface ScenarioItem {
-  scenario: Scenario;
-  team: Team;
-  org: Organization;
-  folder: Folder | null;
-  webhookUrl: string | null;
-}

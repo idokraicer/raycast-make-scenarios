@@ -1,5 +1,5 @@
 import { useLocalStorage } from "@raycast/utils";
-import { useCallback } from "react";
+import { useCallback, useMemo } from "react";
 
 const STORAGE_KEY = "recent-scenario-ids";
 const MAX_RECENTS = 10;
@@ -10,17 +10,18 @@ export function useRecents() {
     setValue: setRecentIds,
     isLoading,
   } = useLocalStorage<string[]>(STORAGE_KEY, []);
+  const uniqueRecentIds = useMemo(() => [...new Set(recentIds)], [recentIds]);
 
   const recordVisit = useCallback(
     (id: string) => {
-      const updated = [id, ...recentIds.filter((r) => r !== id)].slice(
+      const updated = [id, ...uniqueRecentIds.filter((r) => r !== id)].slice(
         0,
         MAX_RECENTS,
       );
       setRecentIds(updated);
     },
-    [recentIds, setRecentIds],
+    [setRecentIds, uniqueRecentIds],
   );
 
-  return { recentIds, recordVisit, isLoading };
+  return { recentIds: uniqueRecentIds, recordVisit, isLoading };
 }

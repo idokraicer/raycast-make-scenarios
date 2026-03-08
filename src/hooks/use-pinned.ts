@@ -1,5 +1,5 @@
 import { useLocalStorage } from "@raycast/utils";
-import { useCallback } from "react";
+import { useCallback, useMemo } from "react";
 
 const STORAGE_KEY = "pinned-scenario-ids";
 
@@ -9,22 +9,23 @@ export function usePinned() {
     setValue: setPinnedIds,
     isLoading,
   } = useLocalStorage<string[]>(STORAGE_KEY, []);
+  const uniquePinnedIds = useMemo(() => [...new Set(pinnedIds)], [pinnedIds]);
 
   const isPinned = useCallback(
-    (id: string) => pinnedIds.includes(id),
-    [pinnedIds],
+    (id: string) => uniquePinnedIds.includes(id),
+    [uniquePinnedIds],
   );
 
   const togglePin = useCallback(
     (id: string) => {
-      if (pinnedIds.includes(id)) {
-        setPinnedIds(pinnedIds.filter((p) => p !== id));
+      if (uniquePinnedIds.includes(id)) {
+        setPinnedIds(uniquePinnedIds.filter((p) => p !== id));
       } else {
-        setPinnedIds([id, ...pinnedIds]);
+        setPinnedIds([id, ...uniquePinnedIds]);
       }
     },
-    [pinnedIds, setPinnedIds],
+    [setPinnedIds, uniquePinnedIds],
   );
 
-  return { pinnedIds, isPinned, togglePin, isLoading };
+  return { pinnedIds: uniquePinnedIds, isPinned, togglePin, isLoading };
 }

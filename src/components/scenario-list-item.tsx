@@ -1,6 +1,6 @@
 import { Action, ActionPanel, Color, Icon, Keyboard, List } from "@raycast/api";
 import { memo } from "react";
-import { ScenarioItem } from "../api/types.js";
+import { ScenarioRow } from "../catalog/types.js";
 import { buildScenarioUrl, zoneLabel } from "../utils/url.js";
 import { ScenarioLogsView } from "./scenario-logs-view.js";
 
@@ -11,22 +11,24 @@ export const ScenarioListItem = memo(function ScenarioListItem({
   onVisit,
   onRefresh,
 }: {
-  item: ScenarioItem;
+  item: ScenarioRow;
   isPinned: boolean;
   onTogglePin: () => void;
   onVisit: () => void;
   onRefresh: () => void;
 }) {
-  const { scenario, team, org, folder, webhookUrl } = item;
-  const url = buildScenarioUrl(org.zone, team.id, scenario.id);
-  const isActive = !scenario.isPaused;
-
-  const subtitle = folder ? `${team.name} / ${folder.name}` : team.name;
-  const keywords = webhookUrl ? [webhookUrl.split("?")[0]] : undefined;
+  const url = buildScenarioUrl(item.zone, item.teamId, item.scenarioId);
+  const isActive = !item.isPaused;
+  const subtitle = item.folderName
+    ? `${item.teamName} / ${item.folderName}`
+    : item.teamName;
+  const keywords = item.webhookUrl
+    ? [item.webhookUrl.split("?")[0]]
+    : undefined;
 
   return (
     <List.Item
-      title={scenario.name}
+      title={item.scenarioName}
       subtitle={subtitle}
       keywords={keywords}
       icon={{
@@ -37,8 +39,8 @@ export const ScenarioListItem = memo(function ScenarioListItem({
         ...(isPinned
           ? [{ icon: { source: Icon.Star, tintColor: Color.Yellow } }]
           : []),
-        { text: org.name },
-        { tag: { value: zoneLabel(org.zone), color: Color.Blue } },
+        { text: item.orgName },
+        { tag: { value: zoneLabel(item.zone), color: Color.Blue } },
       ]}
       actions={
         <ActionPanel>
@@ -65,10 +67,10 @@ export const ScenarioListItem = memo(function ScenarioListItem({
             content={url}
             shortcut={{ modifiers: ["cmd"], key: "c" }}
           />
-          {webhookUrl && (
+          {item.webhookUrl && (
             <Action.CopyToClipboard
               title="Copy Webhook URL"
-              content={webhookUrl}
+              content={item.webhookUrl}
               shortcut={{ modifiers: ["cmd", "shift"], key: "c" }}
             />
           )}

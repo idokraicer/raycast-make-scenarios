@@ -1,163 +1,151 @@
-import { Action, ActionPanel, Color, Icon, List } from "@raycast/api";
+import {
+  Action,
+  ActionPanel,
+  Color,
+  Icon,
+  List,
+  Toast,
+  showToast,
+} from "@raycast/api";
 import { useCallback, useMemo, useState } from "react";
-import { useOrganizations } from "./hooks/use-organizations.js";
-import { useScenarios } from "./hooks/use-scenarios.js";
+import { syncCatalog } from "./catalog/service.js";
+import { OrganizationListRow, ScenarioRow } from "./catalog/types.js";
+import {
+  useCatalogSearch,
+  usePinnedScenarioRows,
+  useRecentScenarioRows,
+} from "./hooks/use-catalog-search.js";
+import { useCatalogFacets } from "./hooks/use-catalog-facets.js";
+import { useCatalogSyncStatus } from "./hooks/use-catalog-sync-status.js";
+import { useOrganizationList } from "./hooks/use-organization-list.js";
 import { usePinned } from "./hooks/use-pinned.js";
 import { useRecents } from "./hooks/use-recents.js";
+import { useSkippedOrganizations } from "./hooks/use-skipped-organizations.js";
 import { ScenarioListItem } from "./components/scenario-list-item.js";
 import { OrgScenariosView } from "./components/org-scenarios-view.js";
+import { CatalogSyncSection } from "./components/catalog-sync-section.js";
 import { SkippedOrgsSection } from "./components/skipped-orgs-section.js";
 import { buildOrgScenariosUrl, zoneLabel } from "./utils/url.js";
-import { scenarioItemKey } from "./utils/scenario-key.js";
-import {
-  parseSearchText,
-  filterOrgs,
-  parseDropdownFilter,
-  applyDropdownFilter,
-} from "./utils/search-filter.js";
-import { Organization, ScenarioItem } from "./api/types.js";
+import { parseDropdownFilter, parseSearchText } from "./utils/search-filter.js";
 
 export default function SearchMake() {
-  const orgs = useOrganizations();
-  const scenarios = useScenarios();
-  const pinned = usePinned();
-  const recents = useRecents();
   const [dropdownValue, setDropdownValue] = useState("type:all");
   const [searchText, setSearchText] = useState("");
-
-  const isLoading =
-    orgs.isLoading ||
-    scenarios.isLoading ||
-    pinned.isLoading ||
-    recents.isLoading;
+  const pinned = usePinned();
+  const recents = useRecents();
+  const facets = useCatalogFacets();
+  const syncStatus = useCatalogSyncStatus();
+  const skippedOrgs = useSkippedOrganizations();
 
   const filter = useMemo(
     () => parseDropdownFilter(dropdownValue),
     [dropdownValue],
   );
-
   const parsed = useMemo(
     () =>
       parseSearchText(
         searchText,
         filter.kind === "type" ? filter.value : "all",
       ),
-    [searchText, filter],
+    [filter, searchText],
   );
-  const { orgPrefix } = parsed;
 
   const showScenarios =
-    filter.kind !== "type" || filter.value !== "organizations";
-  const showOrgs =
-    filter.kind === "type" &&
-    (filter.value === "all" || filter.value === "organizations");
+    !parsed.orgPrefix && filter.kind !== "type"
+      ? true
+      : !parsed.orgPrefix && filter.kind === "type"
+        ? filter.value !== "organizations"
+        : false;
+  const showOrgs = parsed.orgPrefix
+    ? true
+    : filter.kind === "type"
+      ? filter.value !== "scenarios"
+      : false;
 
-  // Apply dropdown filter and pre-compute keys once
-  const itemsWithKeys = useMemo(() => {
-    const filtered = applyDropdownFilter(scenarios.data, filter);
-    return filtered.map((item) => ({
-      item,
-      key: scenarioItemKey(item),
-    }));
-  }, [scenarios.data, filter]);
+  const scenarioQuery = showScenarios ? searchText : "";
+  const orgQuery = parsed.orgPrefix
+    ? parsed.orgSearchQuery
+    : showOrgs
+      ? searchText
+      : "";
+  const statusFilter = filter.kind === "status" ? filter.value : "all";
+  const orgFilter = filter.kind === "org" ? filter.value : undefined;
 
-  // Split into pinned, recent, rest using pre-computed keys
-  const pinnedSet = useMemo(
-    () => new Set(pinned.pinnedIds),
-    [pinned.pinnedIds],
+  const recentIds = useMemo(
+    () => recents.recentIds.filter((id) => !pinned.pinnedIds.includes(id)),
+    [pinned.pinnedIds, recents.recentIds],
+  );
+  const hiddenScenarioKeys = useMemo(
+    () => [...pinned.pinnedIds, ...recentIds],
+    [pinned.pinnedIds, recentIds],
   );
 
-  const pinnedScenarios = useMemo(
-    () => itemsWithKeys.filter(({ key }) => pinnedSet.has(key)),
-    [itemsWithKeys, pinnedSet],
+  const pinnedRows = usePinnedScenarioRows(
+    pinned.pinnedIds,
+    { query: scenarioQuery, status: statusFilter, orgKey: orgFilter },
+    { enabled: showScenarios },
+  );
+  const recentRows = useRecentScenarioRows(
+    recentIds,
+    { query: scenarioQuery, status: statusFilter, orgKey: orgFilter },
+    { enabled: showScenarios },
+  );
+  const scenarioRows = useCatalogSearch(
+    {
+      query: scenarioQuery,
+      status: statusFilter,
+      orgKey: orgFilter,
+      excludeKeys: hiddenScenarioKeys,
+    },
+    { enabled: showScenarios },
+  );
+  const organizationRows = useOrganizationList(
+    { query: orgQuery },
+    { enabled: showOrgs },
   );
 
-  const recentScenarios = useMemo(() => {
-    const recentMap = new Map<string, number>();
-    recents.recentIds.forEach((id, index) => recentMap.set(id, index));
-
-    return itemsWithKeys
-      .filter(({ key }) => recentMap.has(key) && !pinnedSet.has(key))
-      .sort(
-        (a, b) =>
-          (recentMap.get(a.key) ?? Infinity) -
-          (recentMap.get(b.key) ?? Infinity),
-      );
-  }, [itemsWithKeys, recents.recentIds, pinnedSet]);
-
-  const restScenarios = useMemo(() => {
-    const recentSet = new Set(recents.recentIds);
-    return itemsWithKeys.filter(
-      ({ key }) => !pinnedSet.has(key) && !recentSet.has(key),
-    );
-  }, [itemsWithKeys, pinnedSet, recents.recentIds]);
-
-  // Deduplicate orgs for the dropdown
-  const uniqueOrgs = useMemo(() => {
-    const seen = new Map<number, Organization>();
-    for (const item of scenarios.data) {
-      if (!seen.has(item.org.id)) {
-        seen.set(item.org.id, item.org);
-      }
-    }
-    return [...seen.values()].sort((a, b) => a.name.localeCompare(b.name));
-  }, [scenarios.data]);
-
-  // Pre-group scenarios by org ID (avoids 200+ filter passes per render)
-  const scenariosByOrg = useMemo(() => {
-    const map = new Map<number, ScenarioItem[]>();
-    for (const item of scenarios.data) {
-      const list = map.get(item.org.id);
-      if (list) list.push(item);
-      else map.set(item.org.id, [item]);
-    }
-    return map;
-  }, [scenarios.data]);
-
-  const filteredOrgs = useMemo(
-    () => filterOrgs(orgs.data, parsed),
-    [orgs.data, parsed],
-  );
-
-  const revalidate = useCallback(() => {
-    orgs.revalidate();
-    scenarios.revalidate();
-  }, [orgs.revalidate, scenarios.revalidate]);
-
-  const allSkipped = useMemo(
-    () => [...new Set([...scenarios.skippedOrgs, ...orgs.skippedOrgs])],
-    [scenarios.skippedOrgs, orgs.skippedOrgs],
-  );
+  const isLoading =
+    pinned.isLoading ||
+    recents.isLoading ||
+    (syncStatus.isRunning &&
+      pinnedRows.rows.length === 0 &&
+      recentRows.rows.length === 0 &&
+      scenarioRows.rows.length === 0 &&
+      organizationRows.rows.length === 0);
 
   const hasResults =
-    (showScenarios && itemsWithKeys.length > 0) ||
-    (showOrgs && filteredOrgs.length > 0);
+    (showScenarios &&
+      (pinnedRows.rows.length > 0 ||
+        recentRows.rows.length > 0 ||
+        scenarioRows.rows.length > 0)) ||
+    (showOrgs && organizationRows.rows.length > 0);
 
-  function renderScenarioItem({
-    item,
-    key,
-  }: {
-    item: ScenarioItem;
-    key: string;
-  }) {
-    return (
-      <ScenarioListItem
-        key={`sc-${key}`}
-        item={item}
-        isPinned={pinned.isPinned(key)}
-        onTogglePin={() => pinned.togglePin(key)}
-        onVisit={() => recents.recordVisit(key)}
-        onRefresh={revalidate}
-      />
-    );
-  }
+  const refresh = useCallback(async () => {
+    try {
+      await syncCatalog({ force: true });
+    } catch (error) {
+      await showToast({
+        style: Toast.Style.Failure,
+        title: "Failed to refresh catalog",
+        message: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }, []);
+
+  const loadMore = useCallback(() => {
+    if (showScenarios && scenarioRows.hasMore) {
+      scenarioRows.loadMore();
+    }
+    if (showOrgs && organizationRows.hasMore) {
+      organizationRows.loadMore();
+    }
+  }, [organizationRows, scenarioRows, showOrgs, showScenarios]);
 
   return (
     <List
       isLoading={isLoading}
       searchBarPlaceholder="Search Make.com... (type > for orgs)"
       onSearchTextChange={setSearchText}
-      filtering={orgPrefix ? false : { keepSectionOrder: true }}
       searchBarAccessory={
         <List.Dropdown tooltip="Filter" onChange={setDropdownValue} storeValue>
           <List.Dropdown.Section title="Type">
@@ -172,58 +160,115 @@ export default function SearchMake() {
             <List.Dropdown.Item title="Active Only" value="status:active" />
             <List.Dropdown.Item title="Paused Only" value="status:paused" />
           </List.Dropdown.Section>
-          {uniqueOrgs.length > 1 && (
+          {facets.organizations.length > 1 && (
             <List.Dropdown.Section title="Organization">
-              {uniqueOrgs.map((org) => (
+              {facets.organizations.map((org) => (
                 <List.Dropdown.Item
-                  key={org.id}
-                  title={org.name}
-                  value={`org:${org.id}`}
+                  key={org.orgKey}
+                  title={org.orgName}
+                  value={`org:${org.orgKey}`}
                 />
               ))}
             </List.Dropdown.Section>
           )}
         </List.Dropdown>
       }
+      throttle
+      pagination={{
+        pageSize: Math.max(scenarioRows.pageSize, organizationRows.pageSize),
+        hasMore:
+          (showScenarios && scenarioRows.hasMore) ||
+          (showOrgs && organizationRows.hasMore),
+        onLoadMore: loadMore,
+      }}
     >
       {!isLoading && !hasResults && (
         <List.EmptyView
-          title="No results found"
-          description="Check your API token and zone in extension preferences."
+          title={
+            syncStatus.isRunning && !syncStatus.message
+              ? "Loading catalog..."
+              : syncStatus.isRunning
+                ? syncStatus.message
+                : "No results found"
+          }
+          description={
+            syncStatus.isRunning
+              ? syncStatus.totalOrganizations > 0
+                ? `${syncStatus.completedOrganizations}/${syncStatus.totalOrganizations} organizations, ${syncStatus.completedScenarios} scenarios discovered so far.`
+                : "The local catalog is syncing in the background."
+              : "Check your API token and zone in extension preferences."
+          }
           icon={Icon.MagnifyingGlass}
         />
       )}
-      {showScenarios && pinnedScenarios.length > 0 && (
-        <List.Section title="Pinned" subtitle={String(pinnedScenarios.length)}>
-          {pinnedScenarios.map(renderScenarioItem)}
+      <CatalogSyncSection status={syncStatus} />
+      {showScenarios && pinnedRows.rows.length > 0 && (
+        <List.Section
+          title="Pinned"
+          subtitle={String(pinnedRows.totalCount ?? pinnedRows.rows.length)}
+        >
+          {pinnedRows.rows.map((item: ScenarioRow) => (
+            <ScenarioListItem
+              key={item.key}
+              item={item}
+              isPinned={pinned.isPinned(item.key)}
+              onTogglePin={() => pinned.togglePin(item.key)}
+              onVisit={() => recents.recordVisit(item.key)}
+              onRefresh={refresh}
+            />
+          ))}
         </List.Section>
       )}
-      {showScenarios && recentScenarios.length > 0 && (
-        <List.Section title="Recent" subtitle={String(recentScenarios.length)}>
-          {recentScenarios.map(renderScenarioItem)}
+      {showScenarios && recentRows.rows.length > 0 && (
+        <List.Section
+          title="Recent"
+          subtitle={String(recentRows.totalCount ?? recentRows.rows.length)}
+        >
+          {recentRows.rows.map((item: ScenarioRow) => (
+            <ScenarioListItem
+              key={item.key}
+              item={item}
+              isPinned={pinned.isPinned(item.key)}
+              onTogglePin={() => pinned.togglePin(item.key)}
+              onVisit={() => recents.recordVisit(item.key)}
+              onRefresh={refresh}
+            />
+          ))}
         </List.Section>
       )}
       {showScenarios && (
-        <List.Section title="Scenarios" subtitle={String(restScenarios.length)}>
-          {restScenarios.map(renderScenarioItem)}
+        <List.Section
+          title="Scenarios"
+          subtitle={String(scenarioRows.totalCount ?? scenarioRows.rows.length)}
+        >
+          {scenarioRows.rows.map((item: ScenarioRow) => (
+            <ScenarioListItem
+              key={item.key}
+              item={item}
+              isPinned={pinned.isPinned(item.key)}
+              onTogglePin={() => pinned.togglePin(item.key)}
+              onVisit={() => recents.recordVisit(item.key)}
+              onRefresh={refresh}
+            />
+          ))}
         </List.Section>
       )}
       {showOrgs && (
         <List.Section
           title="Organizations"
-          subtitle={String(filteredOrgs.length)}
+          subtitle={String(
+            organizationRows.totalCount ?? organizationRows.rows.length,
+          )}
         >
-          {filteredOrgs.map((item) => {
-            const { org, team } = item;
-            const url = buildOrgScenariosUrl(org.zone, team.id);
-
+          {organizationRows.rows.map((item: OrganizationListRow) => {
+            const url = buildOrgScenariosUrl(item.zone, item.teamId);
             return (
               <List.Item
-                key={`org-${org.id}-${team.id}`}
-                title={org.name}
-                subtitle={team.name}
+                key={`${item.orgKey}-${item.teamKey}`}
+                title={item.orgName}
+                subtitle={item.teamName}
                 accessories={[
-                  { tag: { value: zoneLabel(org.zone), color: Color.Blue } },
+                  { tag: { value: zoneLabel(item.zone), color: Color.Blue } },
                 ]}
                 icon={Icon.Building}
                 actions={
@@ -235,12 +280,12 @@ export default function SearchMake() {
                       shortcut={{ key: "tab", modifiers: [] }}
                       target={
                         <OrgScenariosView
-                          org={org}
-                          scenarios={scenariosByOrg.get(org.id) ?? []}
+                          orgKey={item.orgKey}
+                          orgName={item.orgName}
                           isPinned={pinned.isPinned}
                           onTogglePin={pinned.togglePin}
                           onVisit={recents.recordVisit}
-                          onRefresh={revalidate}
+                          onRefresh={refresh}
                         />
                       }
                     />
@@ -253,7 +298,7 @@ export default function SearchMake() {
                       title="Refresh"
                       icon={Icon.ArrowClockwise}
                       shortcut={{ modifiers: ["cmd"], key: "r" }}
-                      onAction={revalidate}
+                      onAction={refresh}
                     />
                   </ActionPanel>
                 }
@@ -262,7 +307,7 @@ export default function SearchMake() {
           })}
         </List.Section>
       )}
-      <SkippedOrgsSection names={allSkipped} />
+      <SkippedOrgsSection names={skippedOrgs} />
     </List>
   );
 }

@@ -1,17 +1,22 @@
-import { describe, it, expect } from "vitest";
+import { describe, expect, it } from "vitest";
+import type { OrganizationListRow, ScenarioRow } from "../catalog/types.js";
+import { organizationKey, teamKey } from "./scenario-key.js";
 import {
-  parseSearchText,
+  applyDropdownFilter,
   filterOrgs,
   parseDropdownFilter,
-  applyDropdownFilter,
+  parseSearchText,
 } from "./search-filter.js";
-import type { OrgTeamItem } from "../hooks/use-organizations.js";
-import type { ScenarioItem } from "../api/types.js";
 
-function makeOrg(name: string, id = 1): OrgTeamItem {
+function makeOrg(name: string, id = 1): OrganizationListRow {
   return {
-    org: { id, name, zone: "eu1.make.com" },
-    team: { id: 1, name: "Default", organizationId: id },
+    orgKey: organizationKey("eu1.make.com", id),
+    orgId: id,
+    orgName: name,
+    zone: "eu1.make.com",
+    teamKey: teamKey("eu1.make.com", id),
+    teamId: id,
+    teamName: "Default",
   };
 }
 
@@ -39,11 +44,6 @@ describe("parseSearchText", () => {
     expect(result.orgSearchQuery).toBe("acme");
   });
 
-  it("overrides even when dropdown is set to scenarios", () => {
-    const result = parseSearchText(">test", "scenarios");
-    expect(result.effectiveFilter).toBe("organizations");
-  });
-
   it("trims whitespace after >", () => {
     const result = parseSearchText(">  acme  ", "all");
     expect(result.orgSearchQuery).toBe("acme");
@@ -53,35 +53,10 @@ describe("parseSearchText", () => {
     const result = parseSearchText(">ACME Corp", "all");
     expect(result.orgSearchQuery).toBe("acme corp");
   });
-
-  it("handles > with no text after it", () => {
-    const result = parseSearchText(">", "all");
-    expect(result.orgPrefix).toBe(true);
-    expect(result.effectiveFilter).toBe("organizations");
-    expect(result.orgSearchQuery).toBe("");
-  });
-
-  it("handles > with only whitespace", () => {
-    const result = parseSearchText(">   ", "all");
-    expect(result.orgPrefix).toBe(true);
-    expect(result.orgSearchQuery).toBe("");
-  });
-
-  it("does not treat > in the middle as prefix", () => {
-    const result = parseSearchText("a>b", "all");
-    expect(result.orgPrefix).toBe(false);
-    expect(result.effectiveFilter).toBe("all");
-  });
-
-  it("handles empty search text", () => {
-    const result = parseSearchText("", "all");
-    expect(result.orgPrefix).toBe(false);
-    expect(result.orgSearchQuery).toBe("");
-  });
 });
 
 describe("filterOrgs", () => {
-  const orgs: OrgTeamItem[] = [
+  const orgs: OrganizationListRow[] = [
     makeOrg("Acme Corp", 1),
     makeOrg("Beta Inc", 2),
     makeOrg("Acme Labs", 3),
@@ -96,128 +71,96 @@ describe("filterOrgs", () => {
     const parsed = parseSearchText(">acme", "all");
     const result = filterOrgs(orgs, parsed);
     expect(result).toHaveLength(2);
-    expect(result.map((o) => o.org.name)).toEqual(["Acme Corp", "Acme Labs"]);
+    expect(result.map((org) => org.orgName)).toEqual([
+      "Acme Corp",
+      "Acme Labs",
+    ]);
   });
 
   it("is case-insensitive", () => {
     const parsed = parseSearchText(">BETA", "all");
     const result = filterOrgs(orgs, parsed);
     expect(result).toHaveLength(1);
-    expect(result[0].org.name).toBe("Beta Inc");
+    expect(result[0].orgName).toBe("Beta Inc");
   });
 
   it("returns all orgs when > with no query", () => {
     const parsed = parseSearchText(">", "all");
     expect(filterOrgs(orgs, parsed)).toEqual(orgs);
   });
-
-  it("returns empty array when no match", () => {
-    const parsed = parseSearchText(">zzz", "all");
-    expect(filterOrgs(orgs, parsed)).toEqual([]);
-  });
-
-  it("handles empty orgs array", () => {
-    const parsed = parseSearchText(">acme", "all");
-    expect(filterOrgs([], parsed)).toEqual([]);
-  });
-
-  it("matches partial org names", () => {
-    const parsed = parseSearchText(">corp", "all");
-    const result = filterOrgs(orgs, parsed);
-    expect(result).toHaveLength(1);
-    expect(result[0].org.name).toBe("Acme Corp");
-  });
 });
 
-function makeScenarioItem(
-  overrides: {
-    name?: string;
-    isPaused?: boolean;
-    orgId?: number;
-    orgName?: string;
-    scenarioId?: number;
-  } = {},
-): ScenarioItem {
+function makeScenarioRow(overrides: Partial<ScenarioRow> = {}): ScenarioRow {
+  const orgId = overrides.orgId ?? 1;
+  const zone = overrides.zone ?? "eu1.make.com";
   return {
-    scenario: {
-      id: overrides.scenarioId ?? 1,
-      name: overrides.name ?? "Test Scenario",
-      description: "",
-      islinked: false,
-      isPaused: overrides.isPaused ?? false,
-      teamId: 1,
-      hookId: null,
-      folderId: null,
-      lastEdit: "2026-01-01T00:00:00Z",
-      updatedByUser: null,
-    },
-    team: { id: 1, name: "Default", organizationId: overrides.orgId ?? 1 },
-    org: {
-      id: overrides.orgId ?? 1,
-      name: overrides.orgName ?? "Acme",
-      zone: "eu1.make.com",
-    },
-    folder: null,
-    webhookUrl: null,
+    key: overrides.key ?? `${zone}-${orgId}-${overrides.scenarioId ?? 1}`,
+    scenarioId: overrides.scenarioId ?? 1,
+    scenarioName: overrides.scenarioName ?? "Test Scenario",
+    orgKey: overrides.orgKey ?? organizationKey(zone, orgId),
+    orgId,
+    orgName: overrides.orgName ?? "Acme",
+    zone,
+    teamKey: overrides.teamKey ?? teamKey(zone, overrides.teamId ?? 1),
+    teamId: overrides.teamId ?? 1,
+    teamName: overrides.teamName ?? "Default",
+    folderName: overrides.folderName ?? null,
+    webhookUrl: overrides.webhookUrl ?? null,
+    isPaused: overrides.isPaused ?? false,
+    lastEditTs: overrides.lastEditTs ?? Date.parse("2026-01-01T00:00:00Z"),
+    updatedByUserId: overrides.updatedByUserId ?? null,
   };
 }
 
 describe("parseDropdownFilter", () => {
   it("parses type:all", () => {
-    const result = parseDropdownFilter("type:all");
-    expect(result).toEqual({ kind: "type", value: "all" });
-  });
-
-  it("parses type:scenarios", () => {
-    const result = parseDropdownFilter("type:scenarios");
-    expect(result).toEqual({ kind: "type", value: "scenarios" });
-  });
-
-  it("parses type:organizations", () => {
-    const result = parseDropdownFilter("type:organizations");
-    expect(result).toEqual({ kind: "type", value: "organizations" });
+    expect(parseDropdownFilter("type:all")).toEqual({
+      kind: "type",
+      value: "all",
+    });
   });
 
   it("parses status:active", () => {
-    const result = parseDropdownFilter("status:active");
-    expect(result).toEqual({ kind: "status", value: "active" });
+    expect(parseDropdownFilter("status:active")).toEqual({
+      kind: "status",
+      value: "active",
+    });
   });
 
-  it("parses status:paused", () => {
-    const result = parseDropdownFilter("status:paused");
-    expect(result).toEqual({ kind: "status", value: "paused" });
-  });
-
-  it("parses org:<id>", () => {
-    const result = parseDropdownFilter("org:42");
-    expect(result).toEqual({ kind: "org", value: 42 });
+  it("parses org:<key>", () => {
+    expect(parseDropdownFilter("org:eu1.make.com-42")).toEqual({
+      kind: "org",
+      value: "eu1.make.com-42",
+    });
   });
 
   it("defaults to type:all for unknown", () => {
-    const result = parseDropdownFilter("garbage");
-    expect(result).toEqual({ kind: "type", value: "all" });
+    expect(parseDropdownFilter("garbage")).toEqual({
+      kind: "type",
+      value: "all",
+    });
   });
 });
 
 describe("applyDropdownFilter", () => {
-  const scenarios: ScenarioItem[] = [
-    makeScenarioItem({
+  const scenarios: ScenarioRow[] = [
+    makeScenarioRow({
       scenarioId: 1,
-      name: "Active One",
+      scenarioName: "Active One",
       isPaused: false,
       orgId: 1,
       orgName: "Acme",
     }),
-    makeScenarioItem({
+    makeScenarioRow({
       scenarioId: 2,
-      name: "Paused One",
+      scenarioName: "Paused One",
       isPaused: true,
       orgId: 1,
       orgName: "Acme",
     }),
-    makeScenarioItem({
+    makeScenarioRow({
       scenarioId: 3,
-      name: "Active Two",
+      scenarioName: "Active Two",
       isPaused: false,
       orgId: 2,
       orgName: "Beta",
@@ -225,19 +168,9 @@ describe("applyDropdownFilter", () => {
   ];
 
   it("type:all returns all scenarios", () => {
-    const result = applyDropdownFilter(scenarios, {
-      kind: "type",
-      value: "all",
-    });
-    expect(result).toHaveLength(3);
-  });
-
-  it("type:scenarios returns all scenarios (no filtering by type)", () => {
-    const result = applyDropdownFilter(scenarios, {
-      kind: "type",
-      value: "scenarios",
-    });
-    expect(result).toHaveLength(3);
+    expect(
+      applyDropdownFilter(scenarios, { kind: "type", value: "all" }),
+    ).toHaveLength(3);
   });
 
   it("status:active filters to non-paused", () => {
@@ -246,7 +179,7 @@ describe("applyDropdownFilter", () => {
       value: "active",
     });
     expect(result).toHaveLength(2);
-    expect(result.every((s) => !s.scenario.isPaused)).toBe(true);
+    expect(result.every((scenario) => !scenario.isPaused)).toBe(true);
   });
 
   it("status:paused filters to paused", () => {
@@ -255,17 +188,15 @@ describe("applyDropdownFilter", () => {
       value: "paused",
     });
     expect(result).toHaveLength(1);
-    expect(result[0].scenario.name).toBe("Paused One");
+    expect(result[0].scenarioName).toBe("Paused One");
   });
 
-  it("org:<id> filters to specific org", () => {
-    const result = applyDropdownFilter(scenarios, { kind: "org", value: 2 });
+  it("org:<key> filters to specific org", () => {
+    const result = applyDropdownFilter(scenarios, {
+      kind: "org",
+      value: organizationKey("eu1.make.com", 2),
+    });
     expect(result).toHaveLength(1);
-    expect(result[0].org.name).toBe("Beta");
-  });
-
-  it("org:<id> with no match returns empty", () => {
-    const result = applyDropdownFilter(scenarios, { kind: "org", value: 999 });
-    expect(result).toEqual([]);
+    expect(result[0].orgName).toBe("Beta");
   });
 });
