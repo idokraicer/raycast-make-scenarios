@@ -25,13 +25,40 @@ function parseJson<T>(value: string | undefined): T | null {
   }
 }
 
+function normalizeHotStartManifest(
+  raw: CatalogHotStartManifest | null,
+): CatalogHotStartManifest | null {
+  if (!raw) {
+    return null;
+  }
+
+  return {
+    version: raw.version ?? 0,
+    lastSuccessfulSyncAt: raw.lastSuccessfulSyncAt ?? null,
+    isPartial: raw.isPartial ?? false,
+    indexedScenarioCount:
+      raw.indexedScenarioCount ?? raw.defaultScenarioRows?.length ?? 0,
+    defaultScenarioRows: raw.defaultScenarioRows ?? [],
+    pinnedRows: raw.pinnedRows ?? [],
+    recentRows: raw.recentRows ?? [],
+    organizationRows: raw.organizationRows ?? [],
+    facets: raw.facets ?? {
+      organizations: [],
+      teamsByOrg: {},
+    },
+    skippedOrgs: raw.skippedOrgs ?? [],
+  };
+}
+
 export function getHotStartManifest(): CatalogHotStartManifest | null {
   const raw = cache.get(HOT_START_KEY);
   if (hotStartCache && hotStartCache.raw === raw) {
     return hotStartCache.value;
   }
 
-  const value = parseJson<CatalogHotStartManifest>(raw);
+  const value = normalizeHotStartManifest(
+    parseJson<CatalogHotStartManifest>(raw),
+  );
   hotStartCache = { raw, value };
   return value;
 }

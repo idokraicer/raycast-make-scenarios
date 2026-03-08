@@ -6,7 +6,7 @@ import {
   unlinkSync,
   writeFileSync,
 } from "node:fs";
-import { mkdir, rename, rm, writeFile } from "node:fs/promises";
+import { mkdir, readdir, rename, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { createInterface } from "node:readline";
 import {
@@ -33,15 +33,22 @@ import {
   subscribeCatalogVersion,
 } from "./cache.js";
 import {
+  ACTIVE_DIR,
   CATALOG_DIR,
-  GLOBAL_SCENARIOS_PATH,
+  CatalogPaths,
   LOCK_PATH,
-  MANIFEST_PATH,
-  ORGS_DIR,
-  clearDiskManifestCache,
+  WORK_ROOT_DIR,
+  catalogHasData,
+  clearCatalogManifestCache,
+  createWorkCatalogPaths,
   ensureCatalogDirectories,
+  getActiveCatalogPaths,
+  getCatalogPaths,
   getOrgShardPath,
-  readDiskManifest,
+  getPreferredCatalogRoot,
+  migrateLegacyCatalogIfNeeded,
+  readActiveManifest,
+  readCatalogManifest,
 } from "./db.js";
 import {
   CatalogDiskManifest,
@@ -58,13 +65,40 @@ import {
 
 export const PAGE_SIZE = 100;
 
+const CATALOG_SCHEMA_VERSION = 2;
 const SYNC_TTL_MS = 15 * 60 * 1000;
 const LOCK_STALE_MS = 30 * 60 * 1000;
 const WAIT_FOR_SYNC_TIMEOUT_MS = 5 * 60 * 1000;
+const INDEX_ORG_CONCURRENCY = 2;
+const INDEX_TEAM_CONCURRENCY = 4;
+const ENRICH_ORG_CONCURRENCY = 1;
 const PINNED_STORAGE_KEY = "pinned-scenario-ids";
 const RECENT_STORAGE_KEY = "recent-scenario-ids";
 
+type SyncOrganizationResult = {
+  orgRows: ScenarioRow[];
+  organizationRows: OrganizationListRow[];
+  skipped: boolean;
+  skippedName?: string;
+  facet: CatalogFacets["organizations"][number] | null;
+  teams: CatalogFacets["teamsByOrg"][string];
+  needsEnrichment: boolean;
+};
+
+interface CatalogBuildState {
+  currentUserId: number | null;
+  rowsByOrg: Map<string, ScenarioRow[]>;
+  organizationRowsByOrg: Map<string, OrganizationListRow[]>;
+  organizationFacetsByOrg: Map<string, CatalogFacets["organizations"][number]>;
+  teamsByOrg: CatalogFacets["teamsByOrg"];
+  skippedOrgs: Set<string>;
+  indexedOrgKeys: string[];
+  enrichmentPendingOrgKeys: Set<string>;
+}
+
 let inProcessSync: Promise<void> | null = null;
+let inProcessEnrichment: Promise<void> | null = null;
+let releaseLockOnIdle: (() => void) | null = null;
 
 function normalizeSearchQuery(query?: string): string {
   return query?.trim().toLowerCase() ?? "";
@@ -101,14 +135,23 @@ function buildScenarioSearchText(row: ScenarioRow): string {
 }
 
 function normalizeScenarioRow(row: ScenarioRow): ScenarioRow {
-  const normalizedOrgKey = organizationKey(row.zone, row.orgId);
-  const normalizedTeamKey = teamKey(row.zone, row.teamId);
+  const normalizedFolderId = row.folderId ?? null;
+  const normalizedHookId = row.hookId ?? null;
 
   return {
     ...row,
     key: scenarioKey(row.zone, row.orgId, row.teamId, row.scenarioId),
-    orgKey: normalizedOrgKey,
-    teamKey: normalizedTeamKey,
+    orgKey: organizationKey(row.zone, row.orgId),
+    teamKey: teamKey(row.zone, row.teamId),
+    folderId: normalizedFolderId,
+    hookId: normalizedHookId,
+    metadataState:
+      row.metadataState ??
+      (normalizedFolderId === null && normalizedHookId === null
+        ? "ready"
+        : row.folderName !== null || row.webhookUrl !== null
+          ? "ready"
+          : "pending"),
   };
 }
 
@@ -151,9 +194,10 @@ function getOrganizationLastEditMap(
   return result;
 }
 
-function sortOrganizationsByPreviousRecency(organizations: Organization[]) {
-  const previousOrder = readDiskManifest()?.organizationLastEditTs ?? {};
-
+function sortOrganizationsByPreviousRecency(
+  organizations: Organization[],
+  previousOrder: Record<string, number>,
+) {
   return [...organizations].sort((a, b) => {
     const aKey = organizationKey(a.zone, a.id);
     const bKey = organizationKey(b.zone, b.id);
@@ -206,6 +250,93 @@ function matchesScenarioFilters(
   return true;
 }
 
+function createCatalogBuildState(
+  currentUserId: number | null,
+): CatalogBuildState {
+  return {
+    currentUserId,
+    rowsByOrg: new Map(),
+    organizationRowsByOrg: new Map(),
+    organizationFacetsByOrg: new Map(),
+    teamsByOrg: {},
+    skippedOrgs: new Set(),
+    indexedOrgKeys: [],
+    enrichmentPendingOrgKeys: new Set(),
+  };
+}
+
+function getAllRowsFromState(state: CatalogBuildState): ScenarioRow[] {
+  return dedupeScenarioRows([...state.rowsByOrg.values()].flat());
+}
+
+function buildManifestFromState(
+  state: CatalogBuildState,
+  lastSuccessfulSyncAt: number | null,
+): CatalogDiskManifest {
+  const allRows = getAllRowsFromState(state).sort((a, b) =>
+    compareScenarioRows(a, b, state.currentUserId),
+  );
+  const organizationRows = [...state.organizationRowsByOrg.values()]
+    .flat()
+    .sort(
+      (a, b) =>
+        a.orgName.localeCompare(b.orgName) ||
+        a.teamName.localeCompare(b.teamName),
+    );
+  const organizations = [...state.organizationFacetsByOrg.values()].sort(
+    (a, b) => a.orgName.localeCompare(b.orgName),
+  );
+
+  return {
+    schemaVersion: CATALOG_SCHEMA_VERSION,
+    version: Date.now(),
+    lastSuccessfulSyncAt,
+    currentUserId: state.currentUserId,
+    indexedScenarioCount: allRows.length,
+    indexedOrgKeys: [...state.indexedOrgKeys],
+    enrichmentPendingOrgKeys: [...state.enrichmentPendingOrgKeys],
+    organizationLastEditTs: getOrganizationLastEditMap(allRows),
+    defaultScenarioRows: allRows.slice(0, PAGE_SIZE),
+    organizationRows,
+    facets: {
+      organizations,
+      teamsByOrg: { ...state.teamsByOrg },
+    },
+    skippedOrgs: [...state.skippedOrgs].sort((a, b) => a.localeCompare(b)),
+  };
+}
+
+function addIndexedOrgKey(state: CatalogBuildState, orgKey: string) {
+  if (!state.indexedOrgKeys.includes(orgKey)) {
+    state.indexedOrgKeys.push(orgKey);
+  }
+}
+
+function applySyncResultToState(
+  state: CatalogBuildState,
+  result: SyncOrganizationResult,
+) {
+  if (!result.facet) {
+    return;
+  }
+
+  const orgKey = result.facet.orgKey;
+  state.rowsByOrg.set(orgKey, dedupeScenarioRows(result.orgRows));
+  state.organizationRowsByOrg.set(orgKey, result.organizationRows);
+  state.organizationFacetsByOrg.set(orgKey, result.facet);
+  state.teamsByOrg[orgKey] = result.teams;
+  addIndexedOrgKey(state, orgKey);
+
+  if (result.skipped && result.skippedName) {
+    state.skippedOrgs.add(result.skippedName);
+    state.enrichmentPendingOrgKeys.delete(orgKey);
+  } else if (result.needsEnrichment) {
+    state.enrichmentPendingOrgKeys.add(orgKey);
+  } else {
+    state.enrichmentPendingOrgKeys.delete(orgKey);
+  }
+}
+
 async function readStoredIds(key: string): Promise<string[]> {
   try {
     const raw = await LocalStorage.getItem<string>(key);
@@ -219,13 +350,6 @@ async function readStoredIds(key: string): Promise<string[]> {
   } catch {
     return [];
   }
-}
-
-function getScenarioFilePath(params: ScenarioSearchParams): string {
-  if (params.orgKey) {
-    return getOrgShardPath(params.orgKey);
-  }
-  return GLOBAL_SCENARIOS_PATH;
 }
 
 async function readJsonlRows(filePath: string): Promise<ScenarioRow[]> {
@@ -289,8 +413,7 @@ async function collectPagedScenarioRows(
       }
 
       matched += 1;
-
-      if (matched >= offset && rows.length < limit) {
+      if (matched > offset && rows.length < limit) {
         rows.push(row);
       }
     }
@@ -305,44 +428,70 @@ async function collectPagedScenarioRows(
   };
 }
 
-async function readPreviousOrgRows(
-  orgKeyValue: string,
+async function loadRowsByOrg(
+  rootDir: string,
+  orgKeys: string[],
+): Promise<Map<string, ScenarioRow[]>> {
+  const rowsByOrg = new Map<string, ScenarioRow[]>();
+
+  for (const orgKey of orgKeys) {
+    rowsByOrg.set(
+      orgKey,
+      await readJsonlRows(getOrgShardPath(rootDir, orgKey)),
+    );
+  }
+
+  return rowsByOrg;
+}
+
+async function getScenarioRowsByKeysFromRoot(
+  rootDir: string,
+  keys: string[],
+  params: Omit<
+    ScenarioSearchParams,
+    "includeKeys" | "excludeKeys" | "limit" | "offset"
+  > = {},
 ): Promise<ScenarioRow[]> {
-  return readJsonlRows(getOrgShardPath(orgKeyValue));
+  const dedupedKeys = dedupeStringValues(keys);
+  if (dedupedKeys.length === 0) {
+    return [];
+  }
+
+  const { globalScenariosPath } = getCatalogPaths(rootDir);
+  const { rows } = await collectPagedScenarioRows(globalScenariosPath, {
+    ...params,
+    includeKeys: dedupedKeys,
+    limit: dedupedKeys.length,
+    offset: 0,
+  });
+
+  const byKey = new Map(rows.map((row) => [row.key, row]));
+  return dedupedKeys
+    .map((key) => byKey.get(key))
+    .filter(Boolean) as ScenarioRow[];
 }
 
-function getPreviousOrganizationRows(
-  orgKeyValue: string,
-): OrganizationListRow[] {
-  return (readDiskManifest()?.organizationRows ?? []).filter(
-    (row) => row.orgKey === orgKeyValue,
-  );
-}
-
-function getPreviousFacetTeams(orgKeyValue: string) {
-  return readDiskManifest()?.facets.teamsByOrg[orgKeyValue] ?? [];
-}
-
-function getPreviousFacetOrg(orgKeyValue: string) {
-  return (readDiskManifest()?.facets.organizations ?? []).find(
-    (org) => org.orgKey === orgKeyValue,
-  );
-}
-
-async function rebuildHotStartManifest(manifest: CatalogDiskManifest) {
+async function rebuildHotStartManifest(
+  manifest: CatalogDiskManifest,
+  rootDir: string,
+  isPartial: boolean,
+) {
   const [pinnedIds, recentIds] = await Promise.all([
     readStoredIds(PINNED_STORAGE_KEY),
     readStoredIds(RECENT_STORAGE_KEY),
   ]);
 
-  const pinnedRows = await getScenarioRowsByKeys(pinnedIds);
-  const recentRows = await getScenarioRowsByKeys(
+  const pinnedRows = await getScenarioRowsByKeysFromRoot(rootDir, pinnedIds);
+  const recentRows = await getScenarioRowsByKeysFromRoot(
+    rootDir,
     recentIds.filter((id) => !pinnedIds.includes(id)),
   );
 
   const hotStart: CatalogHotStartManifest = {
     version: manifest.version,
     lastSuccessfulSyncAt: manifest.lastSuccessfulSyncAt,
+    isPartial,
+    indexedScenarioCount: manifest.indexedScenarioCount,
     defaultScenarioRows: dedupeScenarioRows(manifest.defaultScenarioRows),
     pinnedRows: dedupeScenarioRows(pinnedRows),
     recentRows: dedupeScenarioRows(recentRows),
@@ -352,34 +501,6 @@ async function rebuildHotStartManifest(manifest: CatalogDiskManifest) {
   };
 
   setHotStartManifest(hotStart);
-}
-
-async function verifyCatalogBootstrapState(): Promise<void> {
-  const manifest = readDiskManifest();
-  if (!manifest || !hasCatalogData()) {
-    return;
-  }
-
-  if (!getHotStartManifest()) {
-    await rebuildHotStartManifest(manifest);
-    bumpCatalogVersion();
-  }
-
-  if (
-    getCatalogSyncStatus().status === "running" &&
-    !inProcessSync &&
-    !existsSync(LOCK_PATH)
-  ) {
-    publishSyncStatus({
-      status: "idle",
-      phase: "idle",
-      message: "",
-      completedOrganizations: 0,
-      totalOrganizations: 0,
-      completedScenarios: 0,
-      lastSuccessfulSyncAt: manifest.lastSuccessfulSyncAt,
-    });
-  }
 }
 
 function publishSyncStatus(
@@ -403,9 +524,7 @@ function tryAcquireSyncLock(): (() => void) | null {
     writeFileSync(
       LOCK_PATH,
       JSON.stringify({ pid: process.pid, at: Date.now() }),
-      {
-        flag: "wx",
-      },
+      { flag: "wx" },
     );
     return () => {
       try {
@@ -453,62 +572,120 @@ async function waitForActiveSync() {
   }
 }
 
-async function writeJsonlFile(filePath: string, rows: ScenarioRow[]) {
-  const body = rows.map((row) => JSON.stringify(row)).join("\n");
-  await writeFile(filePath, body.length > 0 ? `${body}\n` : "", "utf8");
+async function writeTextAtomic(filePath: string, body: string) {
+  const tempPath = `${filePath}.tmp`;
+  await writeFile(tempPath, body, "utf8");
+  await rename(tempPath, filePath);
 }
 
-async function writeCatalogFiles(
+async function writeJsonlAtomic(filePath: string, rows: ScenarioRow[]) {
+  const body = dedupeScenarioRows(rows)
+    .map((row) => JSON.stringify(row))
+    .join("\n");
+
+  await writeTextAtomic(filePath, body.length > 0 ? `${body}\n` : "");
+}
+
+async function writeCatalogSnapshot(
+  paths: CatalogPaths,
   manifest: CatalogDiskManifest,
-  allRows: ScenarioRow[],
   rowsByOrg: Map<string, ScenarioRow[]>,
+  changedOrgKey?: string,
 ) {
-  ensureCatalogDirectories();
-  const tempGlobalPath = `${GLOBAL_SCENARIOS_PATH}.tmp`;
-  const tempManifestPath = `${MANIFEST_PATH}.tmp`;
-  const tempOrgsDir = join(CATALOG_DIR, `orgs.tmp-${Date.now()}`);
-  const backupOrgsDir = join(CATALOG_DIR, `orgs.backup-${Date.now()}`);
-
-  await mkdir(tempOrgsDir, { recursive: true });
-  await writeJsonlFile(tempGlobalPath, allRows);
-
-  for (const [orgKeyValue, rows] of rowsByOrg) {
-    await writeJsonlFile(
-      join(tempOrgsDir, `${encodeURIComponent(orgKeyValue)}.jsonl`),
-      rows,
+  const sortRows = (rows: ScenarioRow[]) =>
+    dedupeScenarioRows(rows).sort((a, b) =>
+      compareScenarioRows(a, b, manifest.currentUserId),
     );
+
+  await mkdir(paths.rootDir, { recursive: true });
+  await mkdir(paths.orgsDir, { recursive: true });
+
+  if (changedOrgKey) {
+    await writeJsonlAtomic(
+      getOrgShardPath(paths.rootDir, changedOrgKey),
+      sortRows(rowsByOrg.get(changedOrgKey) ?? []),
+    );
+  } else {
+    for (const [orgKey, rows] of rowsByOrg) {
+      await writeJsonlAtomic(
+        getOrgShardPath(paths.rootDir, orgKey),
+        sortRows(rows),
+      );
+    }
   }
 
-  await writeFile(tempManifestPath, JSON.stringify(manifest), "utf8");
-
-  if (existsSync(ORGS_DIR)) {
-    await rename(ORGS_DIR, backupOrgsDir);
-  }
-
-  await rename(tempOrgsDir, ORGS_DIR);
-  await rename(tempGlobalPath, GLOBAL_SCENARIOS_PATH);
-  await rename(tempManifestPath, MANIFEST_PATH);
-
-  if (existsSync(backupOrgsDir)) {
-    await rm(backupOrgsDir, { recursive: true, force: true });
-  }
-
-  clearDiskManifestCache();
+  await writeJsonlAtomic(
+    paths.globalScenariosPath,
+    sortRows([...rowsByOrg.values()].flat()),
+  );
+  await writeTextAtomic(paths.manifestPath, JSON.stringify(manifest));
+  clearCatalogManifestCache(paths.rootDir);
 }
 
-async function buildTeamRows(
+async function removeOtherWorkCatalogs(exceptRootDir?: string) {
+  if (!existsSync(WORK_ROOT_DIR)) {
+    return;
+  }
+
+  const entries = await readdir(WORK_ROOT_DIR, { withFileTypes: true });
+  await Promise.all(
+    entries
+      .filter((entry) => entry.isDirectory())
+      .map((entry) => join(WORK_ROOT_DIR, entry.name))
+      .filter((rootDir) => rootDir !== exceptRootDir)
+      .map((rootDir) => rm(rootDir, { recursive: true, force: true })),
+  );
+}
+
+async function promoteWorkCatalog(
+  workPaths: CatalogPaths,
+  manifest: CatalogDiskManifest,
+  state: CatalogBuildState,
+) {
+  await writeCatalogSnapshot(workPaths, manifest, state.rowsByOrg);
+
+  const backupDir = join(CATALOG_DIR, `active.backup-${Date.now()}`);
+  const activePaths = getActiveCatalogPaths();
+
+  if (existsSync(activePaths.rootDir)) {
+    await rename(activePaths.rootDir, backupDir);
+  }
+
+  await rename(workPaths.rootDir, ACTIVE_DIR);
+  await rm(backupDir, { recursive: true, force: true });
+  await removeOtherWorkCatalogs();
+  clearCatalogManifestCache();
+}
+
+function getPreviousOrganizationRows(
+  orgKeyValue: string,
+): OrganizationListRow[] {
+  return (readActiveManifest()?.organizationRows ?? []).filter(
+    (row) => row.orgKey === orgKeyValue,
+  );
+}
+
+function getPreviousFacetTeams(orgKeyValue: string) {
+  return readActiveManifest()?.facets.teamsByOrg[orgKeyValue] ?? [];
+}
+
+function getPreviousFacetOrg(orgKeyValue: string) {
+  return (readActiveManifest()?.facets.organizations ?? []).find(
+    (org) => org.orgKey === orgKeyValue,
+  );
+}
+
+async function readPreviousOrgRows(
+  orgKeyValue: string,
+): Promise<ScenarioRow[]> {
+  return readJsonlRows(getOrgShardPath(ACTIVE_DIR, orgKeyValue));
+}
+
+async function buildTeamRowsFastIndex(
   org: Organization,
   team: Team,
-  folders: Folder[],
-  hooks: Hook[],
   onProgress?: (event: { teamName: string; scenarioCount: number }) => void,
 ): Promise<ScenarioRow[]> {
-  const folderNames = new Map(
-    folders.map((folder) => [folder.id, folder.name]),
-  );
-  const hookUrls = new Map(
-    hooks.filter((hook) => hook.url).map((hook) => [hook.id, hook.url]),
-  );
   const rows: ScenarioRow[] = [];
   let scenarioCount = 0;
 
@@ -528,12 +705,11 @@ async function buildTeamRows(
         teamKey: teamKey(org.zone, team.id),
         teamId: team.id,
         teamName: team.name,
-        folderName: scenario.folderId
-          ? (folderNames.get(scenario.folderId) ?? null)
-          : null,
-        webhookUrl: scenario.hookId
-          ? (hookUrls.get(scenario.hookId) ?? null)
-          : null,
+        folderId: scenario.folderId,
+        folderName: null,
+        hookId: scenario.hookId,
+        webhookUrl: null,
+        metadataState: "pending",
         isPaused: scenario.isPaused,
         lastEditTs: Date.parse(scenario.lastEdit) || 0,
         updatedByUserId: scenario.updatedByUser?.id ?? null,
@@ -544,21 +720,14 @@ async function buildTeamRows(
   return dedupeScenarioRows(rows);
 }
 
-async function syncOrganization(
+async function syncOrganizationFastIndex(
   org: Organization,
   onProgress?: (event: {
     orgName: string;
     teamName: string;
     scenarioCount: number;
   }) => void,
-): Promise<{
-  orgRows: ScenarioRow[];
-  organizationRows: OrganizationListRow[];
-  skipped: boolean;
-  skippedName?: string;
-  facet: CatalogFacets["organizations"][number] | null;
-  teams: CatalogFacets["teamsByOrg"][string];
-}> {
+): Promise<SyncOrganizationResult> {
   const orgKeyValue = organizationKey(org.zone, org.id);
 
   try {
@@ -573,29 +742,26 @@ async function syncOrganization(
       teamName: team.name,
     }));
 
-    const teamRows: ScenarioRow[] = [];
-    for (const team of teams) {
-      onProgress?.({
-        orgName: org.name,
-        teamName: team.name,
-        scenarioCount: teamRows.length,
-      });
-      const [folders, hooks] = await Promise.all([
-        fetchFolders(org.zone, team.id),
-        fetchHooks(org.zone, team.id),
-      ]);
-      const rows = await buildTeamRows(org, team, folders, hooks, (event) => {
-        onProgress?.({
-          orgName: org.name,
-          teamName: event.teamName,
-          scenarioCount: teamRows.length + event.scenarioCount,
-        });
-      });
-      teamRows.push(...rows);
-    }
+    const teamPool = createPool(INDEX_TEAM_CONCURRENCY);
+    const teamRows = new Array<ScenarioRow[]>(teams.length);
+
+    await Promise.all(
+      teams.map((team, index) =>
+        teamPool.run(async () => {
+          const rows = await buildTeamRowsFastIndex(org, team, (event) => {
+            onProgress?.({
+              orgName: org.name,
+              teamName: event.teamName,
+              scenarioCount: event.scenarioCount,
+            });
+          });
+          teamRows[index] = rows;
+        }),
+      ),
+    );
 
     return {
-      orgRows: teamRows,
+      orgRows: dedupeScenarioRows(teamRows.flat()),
       organizationRows,
       skipped: false,
       facet: {
@@ -609,10 +775,12 @@ async function syncOrganization(
         teamId: row.teamId,
         teamName: row.teamName,
       })),
+      needsEnrichment: true,
     };
   } catch {
     const fallbackRows = await readPreviousOrgRows(orgKeyValue);
     const previousFacet = getPreviousFacetOrg(orgKeyValue);
+
     return {
       orgRows: fallbackRows,
       organizationRows: getPreviousOrganizationRows(orgKeyValue),
@@ -625,22 +793,215 @@ async function syncOrganization(
         zone: org.zone,
       },
       teams: getPreviousFacetTeams(orgKeyValue),
+      needsEnrichment: false,
     };
   }
 }
 
-async function performCatalogSync() {
-  publishSyncStatus({
-    status: "running",
-    phase: "initializing",
-    message: "Preparing local catalog",
-    completedOrganizations: 0,
-    totalOrganizations: 0,
-    completedScenarios: 0,
-    lastSuccessfulSyncAt: readDiskManifest()?.lastSuccessfulSyncAt ?? null,
-  });
+function applyTeamMetadata(
+  rows: ScenarioRow[],
+  teamId: number,
+  folders: Folder[],
+  hooks: Hook[],
+): ScenarioRow[] {
+  const folderNames = new Map(
+    folders.map((folder) => [folder.id, folder.name]),
+  );
+  const hookUrls = new Map(
+    hooks.filter((hook) => hook.url).map((hook) => [hook.id, hook.url]),
+  );
 
-  const currentUserId = await fetchCurrentUserId();
+  return rows.map((row) => {
+    if (row.teamId !== teamId) {
+      return row;
+    }
+
+    return {
+      ...row,
+      folderName: row.folderId ? (folderNames.get(row.folderId) ?? null) : null,
+      webhookUrl: row.hookId ? (hookUrls.get(row.hookId) ?? null) : null,
+      metadataState: "ready",
+    };
+  });
+}
+
+async function enrichOrganizationRows(
+  orgKeyValue: string,
+  state: CatalogBuildState,
+  onProgress?: (event: { orgName: string; teamName: string }) => void,
+) {
+  const facet = state.organizationFacetsByOrg.get(orgKeyValue);
+  if (!facet) {
+    state.enrichmentPendingOrgKeys.delete(orgKeyValue);
+    return;
+  }
+
+  const teams = state.teamsByOrg[orgKeyValue] ?? [];
+  let nextRows = state.rowsByOrg.get(orgKeyValue) ?? [];
+
+  for (const team of teams) {
+    onProgress?.({ orgName: facet.orgName, teamName: team.teamName });
+    const [folders, hooks] = await Promise.all([
+      fetchFolders(facet.zone, team.teamId),
+      fetchHooks(facet.zone, team.teamId),
+    ]);
+    nextRows = applyTeamMetadata(nextRows, team.teamId, folders, hooks);
+  }
+
+  state.rowsByOrg.set(orgKeyValue, dedupeScenarioRows(nextRows));
+  if (nextRows.every((row) => row.metadataState === "ready")) {
+    state.enrichmentPendingOrgKeys.delete(orgKeyValue);
+  }
+}
+
+async function performMetadataEnrichment(
+  state: CatalogBuildState,
+  lastSuccessfulSyncAt: number,
+  totalOrganizations: number,
+  completedScenarios: number,
+) {
+  const activePaths = getActiveCatalogPaths();
+  const orgPool = createPool(ENRICH_ORG_CONCURRENCY);
+  const orgKeys = [...state.enrichmentPendingOrgKeys];
+
+  await Promise.all(
+    orgKeys.map((orgKeyValue) =>
+      orgPool.run(async () => {
+        const facet = state.organizationFacetsByOrg.get(orgKeyValue);
+        if (!facet) {
+          state.enrichmentPendingOrgKeys.delete(orgKeyValue);
+          return;
+        }
+
+        publishSyncStatus({
+          status: "running",
+          phase: "enriching",
+          message: `Enriching ${facet.orgName}`,
+          completedOrganizations: totalOrganizations,
+          totalOrganizations,
+          completedScenarios,
+          lastSuccessfulSyncAt,
+        });
+
+        await enrichOrganizationRows(orgKeyValue, state, (event) => {
+          publishSyncStatus({
+            status: "running",
+            phase: "enriching",
+            message: `Enriching ${event.orgName} / ${event.teamName}`,
+            completedOrganizations: totalOrganizations,
+            totalOrganizations,
+            completedScenarios,
+            lastSuccessfulSyncAt,
+          });
+        });
+
+        const manifest = buildManifestFromState(state, lastSuccessfulSyncAt);
+        await writeCatalogSnapshot(
+          activePaths,
+          manifest,
+          state.rowsByOrg,
+          orgKeyValue,
+        );
+        await rebuildHotStartManifest(
+          manifest,
+          ACTIVE_DIR,
+          manifest.enrichmentPendingOrgKeys.length > 0,
+        );
+        bumpCatalogVersion();
+      }),
+    ),
+  );
+
+  publishSyncStatus({
+    status: "idle",
+    phase: "idle",
+    message: "",
+    completedOrganizations: totalOrganizations,
+    totalOrganizations,
+    completedScenarios,
+    lastSuccessfulSyncAt,
+  });
+}
+
+async function startBackgroundEnrichment(
+  state: CatalogBuildState,
+  manifest: CatalogDiskManifest,
+  completedScenarios: number,
+) {
+  if (manifest.enrichmentPendingOrgKeys.length === 0) {
+    publishSyncStatus({
+      status: "idle",
+      phase: "idle",
+      message: "",
+      completedOrganizations: manifest.indexedOrgKeys.length,
+      totalOrganizations: manifest.indexedOrgKeys.length,
+      completedScenarios,
+      lastSuccessfulSyncAt: manifest.lastSuccessfulSyncAt,
+    });
+
+    if (releaseLockOnIdle) {
+      releaseLockOnIdle();
+      releaseLockOnIdle = null;
+    }
+    return;
+  }
+
+  inProcessEnrichment = performMetadataEnrichment(
+    state,
+    manifest.lastSuccessfulSyncAt ?? Date.now(),
+    manifest.indexedOrgKeys.length,
+    completedScenarios,
+  )
+    .catch((error) => {
+      publishSyncStatus({
+        status: "error",
+        phase: "idle",
+        message: "Catalog enrichment failed",
+        completedOrganizations: manifest.indexedOrgKeys.length,
+        totalOrganizations: manifest.indexedOrgKeys.length,
+        completedScenarios,
+        lastSuccessfulSyncAt: manifest.lastSuccessfulSyncAt,
+        errorMessage: error instanceof Error ? error.message : String(error),
+      });
+      throw error;
+    })
+    .finally(() => {
+      if (releaseLockOnIdle) {
+        releaseLockOnIdle();
+        releaseLockOnIdle = null;
+      }
+      inProcessEnrichment = null;
+    });
+}
+
+async function loadBuildStateFromManifest(
+  rootDir: string,
+  manifest: CatalogDiskManifest,
+): Promise<CatalogBuildState> {
+  const state = createCatalogBuildState(manifest.currentUserId);
+  state.indexedOrgKeys = [...manifest.indexedOrgKeys];
+  state.enrichmentPendingOrgKeys = new Set(manifest.enrichmentPendingOrgKeys);
+  state.skippedOrgs = new Set(manifest.skippedOrgs);
+  state.organizationFacetsByOrg = new Map(
+    manifest.facets.organizations.map((org) => [org.orgKey, org]),
+  );
+  state.teamsByOrg = { ...manifest.facets.teamsByOrg };
+
+  for (const orgKeyValue of manifest.indexedOrgKeys) {
+    state.organizationRowsByOrg.set(
+      orgKeyValue,
+      manifest.organizationRows.filter((row) => row.orgKey === orgKeyValue),
+    );
+  }
+
+  state.rowsByOrg = await loadRowsByOrg(rootDir, manifest.indexedOrgKeys);
+  return state;
+}
+
+async function performCatalogSync() {
+  migrateLegacyCatalogIfNeeded();
+  ensureCatalogDirectories();
+  await removeOtherWorkCatalogs();
 
   publishSyncStatus({
     status: "running",
@@ -649,58 +1010,82 @@ async function performCatalogSync() {
     completedOrganizations: 0,
     totalOrganizations: 0,
     completedScenarios: 0,
-    lastSuccessfulSyncAt: readDiskManifest()?.lastSuccessfulSyncAt ?? null,
+    lastSuccessfulSyncAt: readActiveManifest()?.lastSuccessfulSyncAt ?? null,
   });
 
+  const previousManifest = readActiveManifest();
+  const currentUserId = await fetchCurrentUserId();
   const organizations = sortOrganizationsByPreviousRecency(
     await fetchOrganizations(),
+    previousManifest?.organizationLastEditTs ?? {},
   );
-  const results = new Array<Awaited<ReturnType<typeof syncOrganization>>>(
-    organizations.length,
-  );
+
+  const state = createCatalogBuildState(currentUserId);
+  const workPaths = createWorkCatalogPaths(String(Date.now()));
   let completedOrganizations = 0;
   let completedScenarios = 0;
-  const pool = createPool(2);
+  const orgPool = createPool(INDEX_ORG_CONCURRENCY);
 
   await Promise.all(
-    organizations.map((org, index) =>
-      pool.run(async () => {
+    organizations.map((org) =>
+      orgPool.run(async () => {
         publishSyncStatus({
           status: "running",
-          phase: "syncing",
-          message: `Syncing ${org.name}`,
+          phase: "indexing",
+          message: `Indexing ${org.name}`,
           completedOrganizations,
           totalOrganizations: organizations.length,
           completedScenarios,
-          lastSuccessfulSyncAt:
-            readDiskManifest()?.lastSuccessfulSyncAt ?? null,
+          lastSuccessfulSyncAt: previousManifest?.lastSuccessfulSyncAt ?? null,
         });
 
-        results[index] = await syncOrganization(org, (event) => {
+        const result = await syncOrganizationFastIndex(org, (event) => {
           publishSyncStatus({
             status: "running",
-            phase: "syncing",
-            message: `Syncing ${event.orgName} / ${event.teamName}`,
+            phase: "indexing",
+            message: `Indexing ${event.orgName} / ${event.teamName}`,
             completedOrganizations,
             totalOrganizations: organizations.length,
             completedScenarios: completedScenarios + event.scenarioCount,
             lastSuccessfulSyncAt:
-              readDiskManifest()?.lastSuccessfulSyncAt ?? null,
+              previousManifest?.lastSuccessfulSyncAt ?? null,
           });
         });
+
+        applySyncResultToState(state, result);
         completedOrganizations += 1;
-        completedScenarios += results[index]?.orgRows.length ?? 0;
+        completedScenarios += result.orgRows.length;
+
+        const partialManifest = buildManifestFromState(
+          state,
+          previousManifest?.lastSuccessfulSyncAt ?? null,
+        );
+        await writeCatalogSnapshot(
+          workPaths,
+          partialManifest,
+          state.rowsByOrg,
+          result.facet?.orgKey,
+        );
+
+        if (!catalogHasData(ACTIVE_DIR)) {
+          await rebuildHotStartManifest(
+            partialManifest,
+            workPaths.rootDir,
+            true,
+          );
+          bumpCatalogVersion();
+        }
 
         publishSyncStatus(
           {
             status: "running",
-            phase: "syncing",
-            message: `Synced ${completedOrganizations} of ${organizations.length} organizations`,
+            phase: "indexing",
+            message: `Indexed ${completedOrganizations} of ${organizations.length} organizations`,
             completedOrganizations,
             totalOrganizations: organizations.length,
             completedScenarios,
             lastSuccessfulSyncAt:
-              readDiskManifest()?.lastSuccessfulSyncAt ?? null,
+              previousManifest?.lastSuccessfulSyncAt ?? null,
           },
           true,
         );
@@ -708,91 +1093,131 @@ async function performCatalogSync() {
     ),
   );
 
-  const allRows: ScenarioRow[] = [];
-  const organizationRows: OrganizationListRow[] = [];
-  const skippedOrgs: string[] = [];
-  const rowsByOrg = new Map<string, ScenarioRow[]>();
-  const facets: CatalogFacets = {
-    organizations: [],
-    teamsByOrg: {},
-  };
-
-  for (const result of results) {
-    if (!result) continue;
-
-    const orgRows = dedupeScenarioRows(result.orgRows).sort((a, b) =>
-      compareScenarioRows(a, b, currentUserId),
-    );
-    if (result.facet) {
-      facets.organizations.push(result.facet);
-      facets.teamsByOrg[result.facet.orgKey] = result.teams;
-      rowsByOrg.set(result.facet.orgKey, orgRows);
-    }
-
-    allRows.push(...orgRows);
-    organizationRows.push(...result.organizationRows);
-
-    if (result.skipped && result.skippedName) {
-      skippedOrgs.push(result.skippedName);
-    }
-  }
-
-  const dedupedAllRows = dedupeScenarioRows(allRows);
-  dedupedAllRows.sort((a, b) => compareScenarioRows(a, b, currentUserId));
-  facets.organizations.sort((a, b) => a.orgName.localeCompare(b.orgName));
-  organizationRows.sort(
-    (a, b) =>
-      a.orgName.localeCompare(b.orgName) ||
-      a.teamName.localeCompare(b.teamName),
-  );
-
-  const version = Date.now();
-  const manifest: CatalogDiskManifest = {
-    version,
-    lastSuccessfulSyncAt: Date.now(),
-    currentUserId,
-    defaultScenarioRows: dedupedAllRows.slice(0, PAGE_SIZE),
-    organizationRows,
-    facets,
-    skippedOrgs: skippedOrgs.sort((a, b) => a.localeCompare(b)),
-    organizationLastEditTs: getOrganizationLastEditMap(dedupedAllRows),
-  };
+  const promotedManifest = buildManifestFromState(state, Date.now());
 
   publishSyncStatus({
     status: "running",
     phase: "finalizing",
-    message: "Refreshing startup cache",
-    completedOrganizations: organizations.length,
+    message: "Promoting indexed catalog",
+    completedOrganizations,
     totalOrganizations: organizations.length,
     completedScenarios,
-    lastSuccessfulSyncAt: manifest.lastSuccessfulSyncAt,
+    lastSuccessfulSyncAt: promotedManifest.lastSuccessfulSyncAt,
   });
 
-  await writeCatalogFiles(manifest, dedupedAllRows, rowsByOrg);
-  const cacheVersion = bumpCatalogVersion();
-  await rebuildHotStartManifest({ ...manifest, version: cacheVersion });
+  await promoteWorkCatalog(workPaths, promotedManifest, state);
+  await rebuildHotStartManifest(
+    promotedManifest,
+    ACTIVE_DIR,
+    promotedManifest.enrichmentPendingOrgKeys.length > 0,
+  );
+  bumpCatalogVersion();
 
   publishSyncStatus({
-    status: "idle",
-    phase: "idle",
-    message: "",
-    completedOrganizations: organizations.length,
+    status: "running",
+    phase: "enriching",
+    message: "Enriching scenario metadata",
+    completedOrganizations,
     totalOrganizations: organizations.length,
     completedScenarios,
-    lastSuccessfulSyncAt: manifest.lastSuccessfulSyncAt,
+    lastSuccessfulSyncAt: promotedManifest.lastSuccessfulSyncAt,
   });
+
+  void startBackgroundEnrichment(state, promotedManifest, completedScenarios);
+}
+
+async function updateScenarioRowsInCatalog(
+  rootDir: string,
+  orgKeyValue: string,
+  updater: (rows: ScenarioRow[]) => ScenarioRow[],
+) {
+  const manifest = readCatalogManifest(rootDir);
+  if (!manifest) {
+    return;
+  }
+
+  const state = await loadBuildStateFromManifest(rootDir, manifest);
+  state.rowsByOrg.set(
+    orgKeyValue,
+    dedupeScenarioRows(updater(state.rowsByOrg.get(orgKeyValue) ?? [])),
+  );
+  const nextManifest = buildManifestFromState(
+    state,
+    manifest.lastSuccessfulSyncAt,
+  );
+  await writeCatalogSnapshot(
+    getCatalogPaths(rootDir),
+    nextManifest,
+    state.rowsByOrg,
+    orgKeyValue,
+  );
+  await rebuildHotStartManifest(
+    nextManifest,
+    rootDir,
+    nextManifest.enrichmentPendingOrgKeys.length > 0,
+  );
+  bumpCatalogVersion();
+}
+
+async function verifyCatalogBootstrapState(): Promise<void> {
+  migrateLegacyCatalogIfNeeded();
+
+  const preferredRoot = getPreferredCatalogRoot();
+  const manifest = preferredRoot ? readCatalogManifest(preferredRoot) : null;
+  if (preferredRoot && manifest && !getHotStartManifest()) {
+    await rebuildHotStartManifest(
+      manifest,
+      preferredRoot,
+      preferredRoot !== ACTIVE_DIR ||
+        manifest.enrichmentPendingOrgKeys.length > 0,
+    );
+    bumpCatalogVersion();
+  }
+
+  if (
+    getCatalogSyncStatus().status === "running" &&
+    !inProcessSync &&
+    !inProcessEnrichment &&
+    !existsSync(LOCK_PATH)
+  ) {
+    publishSyncStatus({
+      status: "idle",
+      phase: "idle",
+      message: "",
+      completedOrganizations: 0,
+      totalOrganizations: 0,
+      completedScenarios: 0,
+      lastSuccessfulSyncAt: manifest?.lastSuccessfulSyncAt ?? null,
+    });
+  }
 }
 
 export async function searchScenarios(
   params: ScenarioSearchParams = {},
 ): Promise<PagedResult<ScenarioRow>> {
-  return collectPagedScenarioRows(getScenarioFilePath(params), params);
+  const rootDir = getPreferredCatalogRoot();
+  if (!rootDir) {
+    return { rows: [], hasMore: false, totalCount: 0 };
+  }
+
+  const filePath = params.orgKey
+    ? getOrgShardPath(rootDir, params.orgKey)
+    : getCatalogPaths(rootDir).globalScenariosPath;
+  return collectPagedScenarioRows(filePath, params);
 }
 
 export async function listOrgScenarios(
   params: OrganizationScenarioQueryParams,
 ): Promise<PagedResult<ScenarioRow>> {
-  return collectPagedScenarioRows(getOrgShardPath(params.orgKey), params);
+  const rootDir = getPreferredCatalogRoot();
+  if (!rootDir) {
+    return { rows: [], hasMore: false, totalCount: 0 };
+  }
+
+  return collectPagedScenarioRows(
+    getOrgShardPath(rootDir, params.orgKey),
+    params,
+  );
 }
 
 export async function getScenarioRowsByKeys(
@@ -802,28 +1227,20 @@ export async function getScenarioRowsByKeys(
     "includeKeys" | "excludeKeys" | "limit" | "offset"
   > = {},
 ): Promise<ScenarioRow[]> {
-  const dedupedKeys = dedupeStringValues(keys);
-
-  if (dedupedKeys.length === 0) {
+  const rootDir = getPreferredCatalogRoot();
+  if (!rootDir) {
     return [];
   }
 
-  const { rows } = await collectPagedScenarioRows(GLOBAL_SCENARIOS_PATH, {
-    ...params,
-    includeKeys: dedupedKeys,
-    limit: dedupedKeys.length,
-    offset: 0,
-  });
-  const byKey = new Map(rows.map((row) => [row.key, row]));
-  return dedupedKeys
-    .map((key) => byKey.get(key))
-    .filter(Boolean) as ScenarioRow[];
+  return getScenarioRowsByKeysFromRoot(rootDir, keys, params);
 }
 
 export async function listOrganizations(
   params: OrganizationQueryParams = {},
 ): Promise<PagedResult<OrganizationListRow>> {
-  const manifest = readDiskManifest() ?? getHotStartManifest();
+  const rootDir = getPreferredCatalogRoot();
+  const manifest =
+    (rootDir ? readCatalogManifest(rootDir) : null) ?? getHotStartManifest();
   const rows = manifest?.organizationRows ?? [];
   const query = normalizeSearchQuery(params.query);
   const filtered = query
@@ -836,6 +1253,7 @@ export async function listOrganizations(
   const offset = params.offset ?? 0;
   const limit = params.limit ?? PAGE_SIZE;
   const page = filtered.slice(offset, offset + limit);
+
   return {
     rows: page,
     hasMore: offset + limit < filtered.length,
@@ -844,8 +1262,9 @@ export async function listOrganizations(
 }
 
 export function getFacets(): CatalogFacets {
+  const rootDir = getPreferredCatalogRoot();
   return (
-    readDiskManifest()?.facets ??
+    (rootDir ? readCatalogManifest(rootDir)?.facets : null) ??
     getHotStartManifest()?.facets ?? {
       organizations: [],
       teamsByOrg: {},
@@ -854,13 +1273,41 @@ export function getFacets(): CatalogFacets {
 }
 
 export function getSkippedOrganizations(): string[] {
+  const rootDir = getPreferredCatalogRoot();
   return (
-    readDiskManifest()?.skippedOrgs ?? getHotStartManifest()?.skippedOrgs ?? []
+    (rootDir ? readCatalogManifest(rootDir)?.skippedOrgs : null) ??
+    getHotStartManifest()?.skippedOrgs ??
+    []
   );
 }
 
 export function hasCatalogData(): boolean {
-  return existsSync(MANIFEST_PATH) && existsSync(GLOBAL_SCENARIOS_PATH);
+  const preferredRoot = getPreferredCatalogRoot();
+  return preferredRoot ? catalogHasData(preferredRoot) : false;
+}
+
+export async function resolveScenarioWebhookUrl(
+  item: ScenarioRow,
+): Promise<string | null> {
+  if (item.webhookUrl) {
+    return item.webhookUrl;
+  }
+
+  if (!item.hookId) {
+    return null;
+  }
+
+  const hooks = await fetchHooks(item.zone, item.teamId);
+  const webhookUrl = hooks.find((hook) => hook.id === item.hookId)?.url ?? null;
+
+  const rootDir = getPreferredCatalogRoot();
+  if (rootDir && webhookUrl) {
+    await updateScenarioRowsInCatalog(rootDir, item.orgKey, (rows) =>
+      rows.map((row) => (row.key === item.key ? { ...row, webhookUrl } : row)),
+    );
+  }
+
+  return webhookUrl;
 }
 
 export async function syncCatalog({
@@ -868,17 +1315,23 @@ export async function syncCatalog({
 }: {
   force?: boolean;
 } = {}): Promise<void> {
-  const currentManifest = readDiskManifest();
+  const activeManifest = readActiveManifest();
+
   if (
     !force &&
-    currentManifest?.lastSuccessfulSyncAt &&
-    Date.now() - currentManifest.lastSuccessfulSyncAt < SYNC_TTL_MS
+    activeManifest?.lastSuccessfulSyncAt &&
+    activeManifest.enrichmentPendingOrgKeys.length === 0 &&
+    Date.now() - activeManifest.lastSuccessfulSyncAt < SYNC_TTL_MS
   ) {
     return;
   }
 
   if (inProcessSync) {
     return inProcessSync;
+  }
+
+  if (inProcessEnrichment) {
+    return;
   }
 
   const releaseLock = tryAcquireSyncLock();
@@ -889,6 +1342,7 @@ export async function syncCatalog({
     return;
   }
 
+  releaseLockOnIdle = releaseLock;
   inProcessSync = performCatalogSync()
     .catch((error) => {
       publishSyncStatus({
@@ -898,14 +1352,18 @@ export async function syncCatalog({
         completedOrganizations: 0,
         totalOrganizations: 0,
         completedScenarios: 0,
-        lastSuccessfulSyncAt: readDiskManifest()?.lastSuccessfulSyncAt ?? null,
+        lastSuccessfulSyncAt:
+          readActiveManifest()?.lastSuccessfulSyncAt ?? null,
         errorMessage: error instanceof Error ? error.message : String(error),
       });
       throw error;
     })
     .finally(() => {
-      releaseLock();
       inProcessSync = null;
+      if (!inProcessEnrichment && releaseLockOnIdle) {
+        releaseLockOnIdle();
+        releaseLockOnIdle = null;
+      }
     });
 
   return inProcessSync;
@@ -914,7 +1372,7 @@ export async function syncCatalog({
 export async function ensureCatalogReady(): Promise<void> {
   await verifyCatalogBootstrapState();
 
-  const manifest = readDiskManifest();
+  const activeManifest = readActiveManifest();
   const hasSnapshot = hasCatalogData() || getHotStartManifest() !== null;
 
   if (!hasSnapshot) {
@@ -923,8 +1381,22 @@ export async function ensureCatalogReady(): Promise<void> {
   }
 
   if (
-    !manifest?.lastSuccessfulSyncAt ||
-    Date.now() - manifest.lastSuccessfulSyncAt > SYNC_TTL_MS
+    activeManifest &&
+    activeManifest.enrichmentPendingOrgKeys.length > 0 &&
+    !inProcessSync &&
+    !inProcessEnrichment
+  ) {
+    const state = await loadBuildStateFromManifest(ACTIVE_DIR, activeManifest);
+    void startBackgroundEnrichment(
+      state,
+      activeManifest,
+      activeManifest.indexedScenarioCount,
+    );
+  }
+
+  if (
+    !activeManifest?.lastSuccessfulSyncAt ||
+    Date.now() - activeManifest.lastSuccessfulSyncAt > SYNC_TTL_MS
   ) {
     void syncCatalog({ force: true });
   }

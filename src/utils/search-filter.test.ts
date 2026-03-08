@@ -93,19 +93,24 @@ describe("filterOrgs", () => {
 function makeScenarioRow(overrides: Partial<ScenarioRow> = {}): ScenarioRow {
   const orgId = overrides.orgId ?? 1;
   const zone = overrides.zone ?? "eu1.make.com";
+  const teamId = overrides.teamId ?? 1;
+  const scenarioId = overrides.scenarioId ?? 1;
   return {
-    key: overrides.key ?? `${zone}-${orgId}-${overrides.scenarioId ?? 1}`,
-    scenarioId: overrides.scenarioId ?? 1,
+    key: overrides.key ?? `${zone}-${orgId}-${teamId}-${scenarioId}`,
+    scenarioId,
     scenarioName: overrides.scenarioName ?? "Test Scenario",
     orgKey: overrides.orgKey ?? organizationKey(zone, orgId),
     orgId,
     orgName: overrides.orgName ?? "Acme",
     zone,
-    teamKey: overrides.teamKey ?? teamKey(zone, overrides.teamId ?? 1),
-    teamId: overrides.teamId ?? 1,
+    teamKey: overrides.teamKey ?? teamKey(zone, teamId),
+    teamId,
     teamName: overrides.teamName ?? "Default",
+    folderId: overrides.folderId ?? null,
     folderName: overrides.folderName ?? null,
+    hookId: overrides.hookId ?? null,
     webhookUrl: overrides.webhookUrl ?? null,
+    metadataState: overrides.metadataState ?? "ready",
     isPaused: overrides.isPaused ?? false,
     lastEditTs: overrides.lastEditTs ?? Date.parse("2026-01-01T00:00:00Z"),
     updatedByUserId: overrides.updatedByUserId ?? null,

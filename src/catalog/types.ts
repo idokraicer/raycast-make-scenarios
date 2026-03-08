@@ -11,8 +11,11 @@ export interface ScenarioRow {
   teamKey: string;
   teamId: number;
   teamName: string;
+  folderId: number | null;
   folderName: string | null;
+  hookId: number | null;
   webhookUrl: string | null;
+  metadataState: "pending" | "ready";
   isPaused: boolean;
   lastEditTs: number;
   updatedByUserId: number | null;
@@ -80,6 +83,8 @@ export interface PagedResult<T> {
 export interface CatalogHotStartManifest {
   version: number;
   lastSuccessfulSyncAt: number | null;
+  isPartial: boolean;
+  indexedScenarioCount: number;
   defaultScenarioRows: ScenarioRow[];
   pinnedRows: ScenarioRow[];
   recentRows: ScenarioRow[];
@@ -89,21 +94,25 @@ export interface CatalogHotStartManifest {
 }
 
 export interface CatalogDiskManifest {
+  schemaVersion: number;
   version: number;
   lastSuccessfulSyncAt: number | null;
   currentUserId: number | null;
+  indexedScenarioCount: number;
+  indexedOrgKeys: string[];
+  enrichmentPendingOrgKeys: string[];
+  organizationLastEditTs: Record<string, number>;
   defaultScenarioRows: ScenarioRow[];
   organizationRows: OrganizationListRow[];
   facets: CatalogFacets;
   skippedOrgs: string[];
-  organizationLastEditTs: Record<string, number>;
 }
 
 export type CatalogSyncPhase =
   | "idle"
-  | "initializing"
   | "discovering"
-  | "syncing"
+  | "indexing"
+  | "enriching"
   | "finalizing";
 
 export interface CatalogSyncStatus {

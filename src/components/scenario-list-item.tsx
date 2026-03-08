@@ -1,6 +1,17 @@
-import { Action, ActionPanel, Color, Icon, Keyboard, List } from "@raycast/api";
+import {
+  Action,
+  ActionPanel,
+  Clipboard,
+  Color,
+  Icon,
+  Keyboard,
+  List,
+  Toast,
+  showToast,
+} from "@raycast/api";
 import { memo } from "react";
 import { ScenarioRow } from "../catalog/types.js";
+import { resolveScenarioWebhookUrl } from "../catalog/service.js";
 import { buildScenarioUrl, zoneLabel } from "../utils/url.js";
 import { ScenarioLogsView } from "./scenario-logs-view.js";
 
@@ -25,6 +36,25 @@ export const ScenarioListItem = memo(function ScenarioListItem({
   const keywords = item.webhookUrl
     ? [item.webhookUrl.split("?")[0]]
     : undefined;
+  const hasWebhookAction = item.webhookUrl || item.hookId;
+
+  async function copyWebhookUrl() {
+    const webhookUrl = await resolveScenarioWebhookUrl(item);
+
+    if (!webhookUrl) {
+      await showToast({
+        style: Toast.Style.Failure,
+        title: "Webhook URL unavailable",
+      });
+      return;
+    }
+
+    await Clipboard.copy(webhookUrl);
+    await showToast({
+      style: Toast.Style.Success,
+      title: "Webhook URL copied",
+    });
+  }
 
   return (
     <List.Item
@@ -38,6 +68,9 @@ export const ScenarioListItem = memo(function ScenarioListItem({
       accessories={[
         ...(isPinned
           ? [{ icon: { source: Icon.Star, tintColor: Color.Yellow } }]
+          : []),
+        ...(item.metadataState === "pending"
+          ? [{ tag: { value: "Metadata", color: Color.SecondaryText } }]
           : []),
         { text: item.orgName },
         { tag: { value: zoneLabel(item.zone), color: Color.Blue } },
@@ -67,11 +100,16 @@ export const ScenarioListItem = memo(function ScenarioListItem({
             content={url}
             shortcut={{ modifiers: ["cmd"], key: "c" }}
           />
-          {item.webhookUrl && (
-            <Action.CopyToClipboard
-              title="Copy Webhook URL"
-              content={item.webhookUrl}
+          {hasWebhookAction && (
+            <Action
+              title={
+                item.webhookUrl
+                  ? "Copy Webhook URL"
+                  : "Resolve and Copy Webhook URL"
+              }
+              icon={Icon.Link}
               shortcut={{ modifiers: ["cmd", "shift"], key: "c" }}
+              onAction={copyWebhookUrl}
             />
           )}
           <Action
