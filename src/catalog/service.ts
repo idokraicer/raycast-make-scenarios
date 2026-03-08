@@ -354,6 +354,34 @@ async function rebuildHotStartManifest(manifest: CatalogDiskManifest) {
   setHotStartManifest(hotStart);
 }
 
+async function verifyCatalogBootstrapState(): Promise<void> {
+  const manifest = readDiskManifest();
+  if (!manifest || !hasCatalogData()) {
+    return;
+  }
+
+  if (!getHotStartManifest()) {
+    await rebuildHotStartManifest(manifest);
+    bumpCatalogVersion();
+  }
+
+  if (
+    getCatalogSyncStatus().status === "running" &&
+    !inProcessSync &&
+    !existsSync(LOCK_PATH)
+  ) {
+    publishSyncStatus({
+      status: "idle",
+      phase: "idle",
+      message: "",
+      completedOrganizations: 0,
+      totalOrganizations: 0,
+      completedScenarios: 0,
+      lastSuccessfulSyncAt: manifest.lastSuccessfulSyncAt,
+    });
+  }
+}
+
 function publishSyncStatus(
   status: Omit<CatalogSyncStatus, "updatedAt">,
   bumpVersionFlag = false,
@@ -884,6 +912,8 @@ export async function syncCatalog({
 }
 
 export async function ensureCatalogReady(): Promise<void> {
+  await verifyCatalogBootstrapState();
+
   const manifest = readDiskManifest();
   const hasSnapshot = hasCatalogData() || getHotStartManifest() !== null;
 
