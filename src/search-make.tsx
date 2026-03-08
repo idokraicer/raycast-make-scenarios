@@ -25,6 +25,7 @@ import { ScenarioListItem } from "./components/scenario-list-item.js";
 import { OrgScenariosView } from "./components/org-scenarios-view.js";
 import { CatalogSyncSection } from "./components/catalog-sync-section.js";
 import { SkippedOrgsSection } from "./components/skipped-orgs-section.js";
+import { buildCatalogSyncNavigationTitle } from "./utils/catalog-sync-title.js";
 import { buildOrgScenariosUrl, zoneLabel } from "./utils/url.js";
 import { parseDropdownFilter, parseSearchText } from "./utils/search-filter.js";
 
@@ -104,21 +105,21 @@ export default function SearchMake() {
     { enabled: showOrgs },
   );
 
-  const isLoading =
-    pinned.isLoading ||
-    recents.isLoading ||
-    (syncStatus.isRunning &&
-      pinnedRows.rows.length === 0 &&
-      recentRows.rows.length === 0 &&
-      scenarioRows.rows.length === 0 &&
-      organizationRows.rows.length === 0);
-
   const hasResults =
     (showScenarios &&
       (pinnedRows.rows.length > 0 ||
         recentRows.rows.length > 0 ||
         scenarioRows.rows.length > 0)) ||
     (showOrgs && organizationRows.rows.length > 0);
+  const isLoading =
+    pinned.isLoading ||
+    recents.isLoading ||
+    (!hasResults &&
+      (pinnedRows.isLoading ||
+        recentRows.isLoading ||
+        scenarioRows.isLoading ||
+        organizationRows.isLoading ||
+        syncStatus.isRunning));
 
   const refresh = useCallback(async () => {
     try {
@@ -144,6 +145,10 @@ export default function SearchMake() {
   return (
     <List
       isLoading={isLoading}
+      navigationTitle={buildCatalogSyncNavigationTitle(
+        "Search Make",
+        syncStatus,
+      )}
       searchBarPlaceholder="Search Make.com... (type > for orgs)"
       onSearchTextChange={setSearchText}
       searchBarAccessory={

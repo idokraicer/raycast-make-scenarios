@@ -11,6 +11,14 @@ export function useCatalogSyncStatus(autoStart = true) {
   useEffect(() => subscribeCatalogSyncStatus(setStatus), []);
 
   useEffect(() => {
+    const interval = setInterval(() => {
+      setStatus(getCatalogSyncStatus());
+    }, 500);
+
+    return () => clearInterval(interval);
+  }, []);
+
+  useEffect(() => {
     if (!autoStart) return;
     void ensureCatalogReady();
   }, [autoStart]);

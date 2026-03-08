@@ -11,6 +11,7 @@ import { useCatalogSyncStatus } from "./hooks/use-catalog-sync-status.js";
 import { usePinned } from "./hooks/use-pinned.js";
 import { useRecents } from "./hooks/use-recents.js";
 import { useSkippedOrganizations } from "./hooks/use-skipped-organizations.js";
+import { buildCatalogSyncNavigationTitle } from "./utils/catalog-sync-title.js";
 
 export default function SearchScenarios() {
   const [filter, setFilter] = useState("all");
@@ -51,7 +52,10 @@ export default function SearchScenarios() {
 
   return (
     <List
-      isLoading={syncStatus.isRunning && scenarios.rows.length === 0}
+      isLoading={
+        scenarios.rows.length === 0 &&
+        (syncStatus.isRunning || scenarios.isLoading)
+      }
       searchBarPlaceholder="Search scenarios..."
       onSearchTextChange={setSearchText}
       throttle
@@ -83,7 +87,10 @@ export default function SearchScenarios() {
         hasMore: scenarios.hasMore,
         onLoadMore: scenarios.loadMore,
       }}
-      navigationTitle={`Scenarios (${scenarios.totalCount ?? scenarios.rows.length})`}
+      navigationTitle={buildCatalogSyncNavigationTitle(
+        `Scenarios (${scenarios.totalCount ?? scenarios.rows.length})`,
+        syncStatus,
+      )}
     >
       {syncStatus.isRunning && scenarios.rows.length === 0 && (
         <List.EmptyView

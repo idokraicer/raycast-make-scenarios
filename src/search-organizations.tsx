@@ -17,6 +17,7 @@ import { useOrganizationList } from "./hooks/use-organization-list.js";
 import { usePinned } from "./hooks/use-pinned.js";
 import { useRecents } from "./hooks/use-recents.js";
 import { useSkippedOrganizations } from "./hooks/use-skipped-organizations.js";
+import { buildCatalogSyncNavigationTitle } from "./utils/catalog-sync-title.js";
 import { buildOrgScenariosUrl, zoneLabel } from "./utils/url.js";
 import { useState } from "react";
 
@@ -42,7 +43,14 @@ export default function SearchOrganizations() {
 
   return (
     <List
-      isLoading={syncStatus.isRunning && organizations.rows.length === 0}
+      isLoading={
+        organizations.rows.length === 0 &&
+        (syncStatus.isRunning || organizations.isLoading)
+      }
+      navigationTitle={buildCatalogSyncNavigationTitle(
+        `Organizations (${organizations.totalCount ?? organizations.rows.length})`,
+        syncStatus,
+      )}
       searchBarPlaceholder="Search organizations..."
       onSearchTextChange={setSearchText}
       throttle

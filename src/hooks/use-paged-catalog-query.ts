@@ -7,6 +7,7 @@ interface UsePagedCatalogQueryOptions<T, P extends object> {
   params: P;
   enabled?: boolean;
   initialRows?: T[];
+  initialResult?: PagedResult<T>;
   query: (
     params: P & { limit: number; offset: number },
   ) => Promise<PagedResult<T>>;
@@ -16,6 +17,7 @@ export function usePagedCatalogQuery<T, P extends object>({
   params,
   enabled = true,
   initialRows = [],
+  initialResult,
   query,
 }: UsePagedCatalogQueryOptions<T, P>) {
   const initialRowsSignature = useMemo(
@@ -23,13 +25,31 @@ export function usePagedCatalogQuery<T, P extends object>({
     [initialRows],
   );
   const stableInitialRows = useMemo(() => initialRows, [initialRowsSignature]);
-
-  const [rows, setRows] = useState<T[]>(stableInitialRows);
-  const [hasMore, setHasMore] = useState(stableInitialRows.length >= PAGE_SIZE);
-  const [totalCount, setTotalCount] = useState(stableInitialRows.length);
-  const [isLoading, setIsLoading] = useState(
-    enabled && stableInitialRows.length === 0,
+  const initialResultSignature = useMemo(
+    () => JSON.stringify(initialResult ?? null),
+    [initialResult],
   );
+  const stableInitialResult = useMemo(
+    () => initialResult,
+    [initialResultSignature],
+  );
+  const hasInitialResult = stableInitialResult !== undefined;
+  const initialState = useMemo(
+    () =>
+      stableInitialResult ?? {
+        rows: stableInitialRows,
+        hasMore: stableInitialRows.length >= PAGE_SIZE,
+        totalCount: stableInitialRows.length,
+      },
+    [stableInitialResult, stableInitialRows],
+  );
+  const shouldShowInitialLoading =
+    enabled && !hasInitialResult && initialState.rows.length === 0;
+
+  const [rows, setRows] = useState<T[]>(initialState.rows);
+  const [hasMore, setHasMore] = useState(initialState.hasMore);
+  const [totalCount, setTotalCount] = useState(initialState.totalCount);
+  const [isLoading, setIsLoading] = useState(shouldShowInitialLoading);
   const [page, setPage] = useState(1);
   const [catalogVersion, setCatalogVersion] = useState(getCatalogVersion());
   const requestIdRef = useRef(0);
@@ -54,11 +74,20 @@ export function usePagedCatalogQuery<T, P extends object>({
       return;
     }
 
-    setRows(stableInitialRows);
-    setHasMore(stableInitialRows.length >= PAGE_SIZE);
-    setTotalCount(stableInitialRows.length);
+    setRows(initialState.rows);
+    setHasMore(initialState.hasMore);
+    setTotalCount(initialState.totalCount);
+    setIsLoading(shouldShowInitialLoading);
     setPage(1);
-  }, [enabled, initialRowsSignature, signature, stableInitialRows]);
+  }, [
+    enabled,
+    hasInitialResult,
+    initialResultSignature,
+    initialRowsSignature,
+    initialState,
+    signature,
+    shouldShowInitialLoading,
+  ]);
 
   useEffect(() => {
     if (!enabled) {
@@ -67,7 +96,7 @@ export function usePagedCatalogQuery<T, P extends object>({
 
     const requestId = requestIdRef.current + 1;
     requestIdRef.current = requestId;
-    setIsLoading(true);
+    setIsLoading(shouldShowInitialLoading);
 
     void queryRef
       .current({
@@ -90,7 +119,14 @@ export function usePagedCatalogQuery<T, P extends object>({
           setIsLoading(false);
         }
       });
-  }, [catalogVersion, enabled, signature, stableParams]);
+  }, [
+    catalogVersion,
+    enabled,
+    hasInitialResult,
+    signature,
+    stableParams,
+    shouldShowInitialLoading,
+  ]);
 
   const loadMore = useCallback(() => {
     if (!enabled || isLoading || !hasMore) {

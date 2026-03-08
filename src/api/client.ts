@@ -28,6 +28,9 @@ export interface FetchOptions {
 
 const MAX_PAGES = 50;
 const DEFAULT_TIMEOUT_MS = 30_000;
+const MAX_RATE_LIMIT_RETRIES = 4;
+const BASE_RATE_LIMIT_DELAY_MS = 1_000;
+const MAX_RATE_LIMIT_DELAY_MS = 8_000;
 
 function createTimeoutSignal(timeoutMs: number, signal?: AbortSignal) {
   const controller = new AbortController();
@@ -53,6 +56,58 @@ function createTimeoutSignal(timeoutMs: number, signal?: AbortSignal) {
   };
 }
 
+function parseRetryAfterMs(value: string | null): number | null {
+  if (!value) {
+    return null;
+  }
+
+  const seconds = Number(value);
+  if (Number.isFinite(seconds) && seconds >= 0) {
+    return seconds * 1_000;
+  }
+
+  const timestamp = Date.parse(value);
+  if (Number.isNaN(timestamp)) {
+    return null;
+  }
+
+  return Math.max(0, timestamp - Date.now());
+}
+
+function getRateLimitDelayMs(response: Response, attempt: number): number {
+  return Math.min(
+    parseRetryAfterMs(response.headers.get("Retry-After")) ??
+      BASE_RATE_LIMIT_DELAY_MS * 2 ** attempt,
+    MAX_RATE_LIMIT_DELAY_MS,
+  );
+}
+
+function delay(ms: number, signal?: AbortSignal): Promise<void> {
+  if (ms <= 0) {
+    return Promise.resolve();
+  }
+
+  return new Promise<void>((resolve, reject) => {
+    const timeoutId = setTimeout(() => {
+      signal?.removeEventListener("abort", onAbort);
+      resolve();
+    }, ms);
+
+    function onAbort() {
+      clearTimeout(timeoutId);
+      signal?.removeEventListener("abort", onAbort);
+      reject(new Error("Request aborted"));
+    }
+
+    if (signal?.aborted) {
+      onAbort();
+      return;
+    }
+
+    signal?.addEventListener("abort", onAbort, { once: true });
+  });
+}
+
 export async function apiFetch<T>(options: FetchOptions): Promise<T> {
   const {
     zone,
@@ -68,43 +123,63 @@ export async function apiFetch<T>(options: FetchOptions): Promise<T> {
     }
   }
 
-  const timeout = createTimeoutSignal(timeoutMs, signal);
-  let response: Response;
+  for (let attempt = 0; attempt <= MAX_RATE_LIMIT_RETRIES; attempt++) {
+    const timeout = createTimeoutSignal(timeoutMs, signal);
+    let response: Response;
 
-  try {
-    response = await fetch(url.toString(), {
-      headers: {
-        Authorization: getAuthHeader(),
-        "Content-Type": "application/json",
-      },
-      signal: timeout.signal,
-    });
-  } catch (error) {
+    try {
+      response = await fetch(url.toString(), {
+        headers: {
+          Authorization: getAuthHeader(),
+          "Content-Type": "application/json",
+        },
+        signal: timeout.signal,
+      });
+    } catch (error) {
+      timeout.cleanup();
+
+      if (signal?.aborted) {
+        throw new Error(`Request aborted (${zone}${path})`);
+      }
+
+      if (timeout.signal.aborted) {
+        throw new Error(
+          `Request timed out after ${timeoutMs}ms (${zone}${path})`,
+        );
+      }
+
+      throw error;
+    }
+
     timeout.cleanup();
 
-    if (timeout.signal.aborted) {
+    if (response.status === 429 && attempt < MAX_RATE_LIMIT_RETRIES) {
+      await delay(getRateLimitDelayMs(response, attempt), signal);
+      continue;
+    }
+
+    if (!response.ok) {
+      if (response.status === 401 || response.status === 403) {
+        throw new Error(
+          `Authentication failed on ${zone}. Check your API token.`,
+        );
+      }
+
+      if (response.status === 429) {
+        throw new Error(
+          `API rate limit exceeded after ${MAX_RATE_LIMIT_RETRIES + 1} attempts (${zone}${path})`,
+        );
+      }
+
       throw new Error(
-        `Request timed out after ${timeoutMs}ms (${zone}${path})`,
+        `API error ${response.status}: ${response.statusText} (${zone}${path})`,
       );
     }
 
-    throw error;
+    return response.json() as Promise<T>;
   }
 
-  timeout.cleanup();
-
-  if (!response.ok) {
-    if (response.status === 401 || response.status === 403) {
-      throw new Error(
-        `Authentication failed on ${zone}. Check your API token.`,
-      );
-    }
-    throw new Error(
-      `API error ${response.status}: ${response.statusText} (${zone}${path})`,
-    );
-  }
-
-  return response.json() as Promise<T>;
+  throw new Error(`Unexpected API retry state (${zone}${path})`);
 }
 
 export async function apiFetchAllPages<T>(

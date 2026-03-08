@@ -50,6 +50,23 @@ function normalizeHotStartManifest(
   };
 }
 
+function normalizeCatalogSyncStatus(
+  raw: CatalogSyncStatus | null,
+): CatalogSyncStatus {
+  return (
+    raw ?? {
+      status: "idle",
+      phase: "idle",
+      message: "",
+      completedOrganizations: 0,
+      totalOrganizations: 0,
+      completedScenarios: 0,
+      lastSuccessfulSyncAt: getHotStartManifest()?.lastSuccessfulSyncAt ?? null,
+      updatedAt: 0,
+    }
+  );
+}
+
 export function getHotStartManifest(): CatalogHotStartManifest | null {
   const raw = cache.get(HOT_START_KEY);
   if (hotStartCache && hotStartCache.raw === raw) {
@@ -100,16 +117,7 @@ export function getCatalogSyncStatus(): CatalogSyncStatus {
     return syncStatusCache.value;
   }
 
-  const value = parseJson<CatalogSyncStatus>(raw) ?? {
-    status: "idle",
-    phase: "idle",
-    message: "",
-    completedOrganizations: 0,
-    totalOrganizations: 0,
-    completedScenarios: 0,
-    lastSuccessfulSyncAt: getHotStartManifest()?.lastSuccessfulSyncAt ?? null,
-    updatedAt: 0,
-  };
+  const value = normalizeCatalogSyncStatus(parseJson<CatalogSyncStatus>(raw));
 
   syncStatusCache = { raw, value };
   return value;
@@ -124,9 +132,13 @@ export function setCatalogSyncStatus(status: CatalogSyncStatus): void {
 export function subscribeCatalogSyncStatus(
   callback: (status: CatalogSyncStatus) => void,
 ): () => void {
-  return cache.subscribe((key) => {
+  return cache.subscribe((key, data) => {
     if (key === SYNC_STATUS_KEY) {
-      callback(getCatalogSyncStatus());
+      const value = normalizeCatalogSyncStatus(
+        parseJson<CatalogSyncStatus>(data),
+      );
+      syncStatusCache = { raw: data, value };
+      callback(value);
     }
   });
 }

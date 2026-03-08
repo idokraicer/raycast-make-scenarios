@@ -21,6 +21,7 @@ function getDiscoveryZone(): Zone {
 }
 
 type RequestOptions = Pick<FetchOptions, "signal" | "timeoutMs">;
+type OrganizationRequestOptions = RequestOptions & { bypassCache?: boolean };
 
 export async function fetchCurrentUserId(
   options?: RequestOptions,
@@ -29,6 +30,7 @@ export async function fetchCurrentUserId(
     zone: getDiscoveryZone(),
     path: "/users/me",
     signal: options?.signal,
+    timeoutMs: options?.timeoutMs,
   });
   return data.authUser.id;
 }
@@ -37,9 +39,13 @@ let cachedOrgs: { data: Organization[]; timestamp: number } | null = null;
 const ORG_CACHE_TTL_MS = 10_000;
 
 export async function fetchOrganizations(
-  options?: RequestOptions,
+  options?: OrganizationRequestOptions,
 ): Promise<Organization[]> {
-  if (cachedOrgs && Date.now() - cachedOrgs.timestamp < ORG_CACHE_TTL_MS) {
+  if (
+    !options?.bypassCache &&
+    cachedOrgs &&
+    Date.now() - cachedOrgs.timestamp < ORG_CACHE_TTL_MS
+  ) {
     return cachedOrgs.data;
   }
   const data = await apiFetchAllPages<Organization>(
@@ -47,6 +53,7 @@ export async function fetchOrganizations(
       zone: getDiscoveryZone(),
       path: "/organizations",
       signal: options?.signal,
+      timeoutMs: options?.timeoutMs,
     },
     "organizations",
   );
@@ -65,6 +72,7 @@ export async function fetchTeams(
       path: "/teams",
       params: { organizationId: String(organizationId) },
       signal: options?.signal,
+      timeoutMs: options?.timeoutMs,
     },
     "teams",
   );
@@ -81,6 +89,7 @@ export async function fetchScenarios(
       path: "/scenarios",
       params: { teamId: String(teamId) },
       signal: options?.signal,
+      timeoutMs: options?.timeoutMs,
     },
     "scenarios",
   );
@@ -97,6 +106,7 @@ export function fetchScenarioPages(
       path: "/scenarios",
       params: { teamId: String(teamId) },
       signal: options?.signal,
+      timeoutMs: options?.timeoutMs,
     },
     "scenarios",
   );
@@ -113,6 +123,7 @@ export async function fetchHooks(
       path: "/hooks",
       params: { teamId: String(teamId) },
       signal: options?.signal,
+      timeoutMs: options?.timeoutMs,
     },
     "hooks",
   );
@@ -129,6 +140,7 @@ export async function fetchFolders(
       path: "/scenarios-folders",
       params: { teamId: String(teamId) },
       signal: options?.signal,
+      timeoutMs: options?.timeoutMs,
     },
     "scenariosFolders",
   );
@@ -145,6 +157,7 @@ export async function fetchUsers(
       path: "/users",
       params: { teamId: String(teamId) },
       signal: options?.signal,
+      timeoutMs: options?.timeoutMs,
     },
     "users",
   );
@@ -163,6 +176,7 @@ export async function fetchScenarioLogs(
       "pg[limit]": "50",
     },
     signal: options?.signal,
+    timeoutMs: options?.timeoutMs,
   });
   return data.scenarioLogs;
 }

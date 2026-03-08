@@ -2,6 +2,7 @@ import { LocalStorage } from "@raycast/api";
 import {
   createReadStream,
   existsSync,
+  readFileSync,
   statSync,
   unlinkSync,
   writeFileSync,
@@ -72,8 +73,15 @@ const WAIT_FOR_SYNC_TIMEOUT_MS = 5 * 60 * 1000;
 const INDEX_ORG_CONCURRENCY = 2;
 const INDEX_TEAM_CONCURRENCY = 4;
 const ENRICH_ORG_CONCURRENCY = 1;
+const ENRICH_TEAM_CONCURRENCY = 3;
+const LOAD_ORG_ROWS_CONCURRENCY = 4;
+const INITIAL_VISIBLE_FLUSH_BATCH_SIZE = 2;
+const INITIAL_VISIBLE_FLUSH_INTERVAL_MS = 1_500;
+const ENRICH_VISIBLE_FLUSH_BATCH_SIZE = 2;
+const ENRICH_VISIBLE_FLUSH_INTERVAL_MS = 1_500;
 const PINNED_STORAGE_KEY = "pinned-scenario-ids";
 const RECENT_STORAGE_KEY = "recent-scenario-ids";
+const SYNC_STATUS_STALE_MS = 2 * 60 * 1000;
 
 type SyncOrganizationResult = {
   orgRows: ScenarioRow[];
@@ -433,13 +441,18 @@ async function loadRowsByOrg(
   orgKeys: string[],
 ): Promise<Map<string, ScenarioRow[]>> {
   const rowsByOrg = new Map<string, ScenarioRow[]>();
+  const readPool = createPool(LOAD_ORG_ROWS_CONCURRENCY);
 
-  for (const orgKey of orgKeys) {
-    rowsByOrg.set(
-      orgKey,
-      await readJsonlRows(getOrgShardPath(rootDir, orgKey)),
-    );
-  }
+  await Promise.all(
+    orgKeys.map((orgKey) =>
+      readPool.run(async () => {
+        rowsByOrg.set(
+          orgKey,
+          await readJsonlRows(getOrgShardPath(rootDir, orgKey)),
+        );
+      }),
+    ),
+  );
 
   return rowsByOrg;
 }
@@ -507,6 +520,17 @@ function publishSyncStatus(
   status: Omit<CatalogSyncStatus, "updatedAt">,
   bumpVersionFlag = false,
 ) {
+  if (status.status === "running") {
+    try {
+      writeFileSync(
+        LOCK_PATH,
+        JSON.stringify({ pid: process.pid, at: Date.now() }),
+      );
+    } catch {
+      // Ignore heartbeat refresh failures; the next sync can recover.
+    }
+  }
+
   setCatalogSyncStatus({
     ...status,
     updatedAt: Date.now(),
@@ -514,6 +538,60 @@ function publishSyncStatus(
 
   if (bumpVersionFlag) {
     bumpCatalogVersion();
+  }
+}
+
+function isProcessAlive(pid: number | undefined): boolean {
+  if (!pid || !Number.isInteger(pid) || pid <= 0) {
+    return false;
+  }
+
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return !(
+      typeof error === "object" &&
+      error !== null &&
+      "code" in error &&
+      error.code === "ESRCH"
+    );
+  }
+}
+
+function getSyncLockPid(): number | undefined {
+  try {
+    const raw = readFileSync(LOCK_PATH, "utf8");
+    const parsed = JSON.parse(raw) as { pid?: unknown };
+    return typeof parsed.pid === "number" ? parsed.pid : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function hasFreshSyncLock(): boolean {
+  if (!existsSync(LOCK_PATH)) {
+    return false;
+  }
+
+  try {
+    const stats = statSync(LOCK_PATH);
+    if (Date.now() - stats.mtimeMs > SYNC_STATUS_STALE_MS) {
+      return false;
+    }
+
+    const lockPid = getSyncLockPid();
+    return lockPid === process.pid || isProcessAlive(lockPid);
+  } catch {
+    return false;
+  }
+}
+
+function clearSyncLock() {
+  try {
+    unlinkSync(LOCK_PATH);
+  } catch {
+    // Ignore stale lock cleanup failures.
   }
 }
 
@@ -547,6 +625,11 @@ function tryAcquireSyncLock(): (() => void) | null {
     try {
       const stats = statSync(LOCK_PATH);
       if (Date.now() - stats.mtimeMs > LOCK_STALE_MS) {
+        unlinkSync(LOCK_PATH);
+        return tryAcquireSyncLock();
+      }
+
+      if (!isProcessAlive(getSyncLockPid())) {
         unlinkSync(LOCK_PATH);
         return tryAcquireSyncLock();
       }
@@ -590,8 +673,12 @@ async function writeCatalogSnapshot(
   paths: CatalogPaths,
   manifest: CatalogDiskManifest,
   rowsByOrg: Map<string, ScenarioRow[]>,
-  changedOrgKey?: string,
+  options: {
+    changedOrgKey?: string;
+    includeGlobalSnapshot?: boolean;
+  } = {},
 ) {
+  const { changedOrgKey, includeGlobalSnapshot = true } = options;
   const sortRows = (rows: ScenarioRow[]) =>
     dedupeScenarioRows(rows).sort((a, b) =>
       compareScenarioRows(a, b, manifest.currentUserId),
@@ -612,6 +699,10 @@ async function writeCatalogSnapshot(
         sortRows(rows),
       );
     }
+  }
+
+  if (!includeGlobalSnapshot) {
+    return;
   }
 
   await writeJsonlAtomic(
@@ -837,16 +928,39 @@ async function enrichOrganizationRows(
   }
 
   const teams = state.teamsByOrg[orgKeyValue] ?? [];
-  let nextRows = state.rowsByOrg.get(orgKeyValue) ?? [];
+  const rowsByTeam = new Map<number, ScenarioRow[]>();
 
-  for (const team of teams) {
-    onProgress?.({ orgName: facet.orgName, teamName: team.teamName });
-    const [folders, hooks] = await Promise.all([
-      fetchFolders(facet.zone, team.teamId),
-      fetchHooks(facet.zone, team.teamId),
-    ]);
-    nextRows = applyTeamMetadata(nextRows, team.teamId, folders, hooks);
+  for (const row of state.rowsByOrg.get(orgKeyValue) ?? []) {
+    const teamRows = rowsByTeam.get(row.teamId) ?? [];
+    teamRows.push(row);
+    rowsByTeam.set(row.teamId, teamRows);
   }
+
+  const teamPool = createPool(ENRICH_TEAM_CONCURRENCY);
+
+  await Promise.all(
+    teams.map((team) =>
+      teamPool.run(async () => {
+        const teamRows = rowsByTeam.get(team.teamId) ?? [];
+        if (teamRows.length === 0) {
+          return;
+        }
+
+        onProgress?.({ orgName: facet.orgName, teamName: team.teamName });
+        const [folders, hooks] = await Promise.all([
+          fetchFolders(facet.zone, team.teamId),
+          fetchHooks(facet.zone, team.teamId),
+        ]);
+
+        rowsByTeam.set(
+          team.teamId,
+          applyTeamMetadata(teamRows, team.teamId, folders, hooks),
+        );
+      }),
+    ),
+  );
+
+  const nextRows = dedupeScenarioRows([...rowsByTeam.values()].flat());
 
   state.rowsByOrg.set(orgKeyValue, dedupeScenarioRows(nextRows));
   if (nextRows.every((row) => row.metadataState === "ready")) {
@@ -863,6 +977,8 @@ async function performMetadataEnrichment(
   const activePaths = getActiveCatalogPaths();
   const orgPool = createPool(ENRICH_ORG_CONCURRENCY);
   const orgKeys = [...state.enrichmentPendingOrgKeys];
+  let pendingVisibleFlushCount = 0;
+  let lastVisibleFlushAt = 0;
 
   await Promise.all(
     orgKeys.map((orgKeyValue) =>
@@ -896,18 +1012,28 @@ async function performMetadataEnrichment(
         });
 
         const manifest = buildManifestFromState(state, lastSuccessfulSyncAt);
-        await writeCatalogSnapshot(
-          activePaths,
-          manifest,
-          state.rowsByOrg,
-          orgKeyValue,
-        );
-        await rebuildHotStartManifest(
-          manifest,
-          ACTIVE_DIR,
-          manifest.enrichmentPendingOrgKeys.length > 0,
-        );
-        bumpCatalogVersion();
+        pendingVisibleFlushCount += 1;
+
+        const shouldFlushVisibleSnapshot =
+          manifest.enrichmentPendingOrgKeys.length === 0 ||
+          pendingVisibleFlushCount >= ENRICH_VISIBLE_FLUSH_BATCH_SIZE ||
+          Date.now() - lastVisibleFlushAt >= ENRICH_VISIBLE_FLUSH_INTERVAL_MS;
+
+        await writeCatalogSnapshot(activePaths, manifest, state.rowsByOrg, {
+          changedOrgKey: shouldFlushVisibleSnapshot ? undefined : orgKeyValue,
+          includeGlobalSnapshot: shouldFlushVisibleSnapshot,
+        });
+
+        if (shouldFlushVisibleSnapshot) {
+          await rebuildHotStartManifest(
+            manifest,
+            ACTIVE_DIR,
+            manifest.enrichmentPendingOrgKeys.length > 0,
+          );
+          pendingVisibleFlushCount = 0;
+          lastVisibleFlushAt = Date.now();
+          bumpCatalogVersion();
+        }
       }),
     ),
   );
@@ -1014,17 +1140,24 @@ async function performCatalogSync() {
   });
 
   const previousManifest = readActiveManifest();
-  const currentUserId = await fetchCurrentUserId();
+  const [currentUserId, discoveredOrganizations] = await Promise.all([
+    fetchCurrentUserId(),
+    fetchOrganizations({ bypassCache: true }),
+  ]);
   const organizations = sortOrganizationsByPreviousRecency(
-    await fetchOrganizations(),
+    discoveredOrganizations,
     previousManifest?.organizationLastEditTs ?? {},
   );
 
   const state = createCatalogBuildState(currentUserId);
   const workPaths = createWorkCatalogPaths(String(Date.now()));
+  const hasActiveCatalog = catalogHasData(ACTIVE_DIR);
   let completedOrganizations = 0;
   let completedScenarios = 0;
   const orgPool = createPool(INDEX_ORG_CONCURRENCY);
+  const partialWritePool = createPool(1);
+  let pendingVisibleFlushCount = 0;
+  let lastVisibleFlushAt = 0;
 
   await Promise.all(
     organizations.map((org) =>
@@ -1056,39 +1189,56 @@ async function performCatalogSync() {
         completedOrganizations += 1;
         completedScenarios += result.orgRows.length;
 
-        const partialManifest = buildManifestFromState(
-          state,
-          previousManifest?.lastSuccessfulSyncAt ?? null,
-        );
-        await writeCatalogSnapshot(
-          workPaths,
-          partialManifest,
-          state.rowsByOrg,
-          result.facet?.orgKey,
-        );
+        if (!hasActiveCatalog) {
+          const forceVisibleFlush = completedOrganizations === 1;
 
-        if (!catalogHasData(ACTIVE_DIR)) {
-          await rebuildHotStartManifest(
-            partialManifest,
-            workPaths.rootDir,
-            true,
-          );
-          bumpCatalogVersion();
+          await partialWritePool.run(async () => {
+            pendingVisibleFlushCount += 1;
+
+            const partialManifest = buildManifestFromState(
+              state,
+              previousManifest?.lastSuccessfulSyncAt ?? null,
+            );
+            const shouldFlushVisibleSnapshot =
+              forceVisibleFlush ||
+              pendingVisibleFlushCount >= INITIAL_VISIBLE_FLUSH_BATCH_SIZE ||
+              Date.now() - lastVisibleFlushAt >=
+                INITIAL_VISIBLE_FLUSH_INTERVAL_MS;
+
+            await writeCatalogSnapshot(
+              workPaths,
+              partialManifest,
+              state.rowsByOrg,
+              {
+                changedOrgKey: shouldFlushVisibleSnapshot
+                  ? undefined
+                  : result.facet?.orgKey,
+                includeGlobalSnapshot: shouldFlushVisibleSnapshot,
+              },
+            );
+
+            if (shouldFlushVisibleSnapshot) {
+              await rebuildHotStartManifest(
+                partialManifest,
+                workPaths.rootDir,
+                true,
+              );
+              pendingVisibleFlushCount = 0;
+              lastVisibleFlushAt = Date.now();
+              bumpCatalogVersion();
+            }
+          });
         }
 
-        publishSyncStatus(
-          {
-            status: "running",
-            phase: "indexing",
-            message: `Indexed ${completedOrganizations} of ${organizations.length} organizations`,
-            completedOrganizations,
-            totalOrganizations: organizations.length,
-            completedScenarios,
-            lastSuccessfulSyncAt:
-              previousManifest?.lastSuccessfulSyncAt ?? null,
-          },
-          true,
-        );
+        publishSyncStatus({
+          status: "running",
+          phase: "indexing",
+          message: `Indexed ${completedOrganizations} of ${organizations.length} organizations`,
+          completedOrganizations,
+          totalOrganizations: organizations.length,
+          completedScenarios,
+          lastSuccessfulSyncAt: previousManifest?.lastSuccessfulSyncAt ?? null,
+        });
       }),
     ),
   );
@@ -1149,7 +1299,7 @@ async function updateScenarioRowsInCatalog(
     getCatalogPaths(rootDir),
     nextManifest,
     state.rowsByOrg,
-    orgKeyValue,
+    { changedOrgKey: orgKeyValue },
   );
   await rebuildHotStartManifest(
     nextManifest,
@@ -1174,12 +1324,16 @@ async function verifyCatalogBootstrapState(): Promise<void> {
     bumpCatalogVersion();
   }
 
-  if (
-    getCatalogSyncStatus().status === "running" &&
+  const syncStatus = getCatalogSyncStatus();
+  const shouldRecoverStaleSync =
+    syncStatus.status === "running" &&
     !inProcessSync &&
     !inProcessEnrichment &&
-    !existsSync(LOCK_PATH)
-  ) {
+    (!hasFreshSyncLock() ||
+      Date.now() - syncStatus.updatedAt > SYNC_STATUS_STALE_MS);
+
+  if (shouldRecoverStaleSync) {
+    clearSyncLock();
     publishSyncStatus({
       status: "idle",
       phase: "idle",
@@ -1394,12 +1548,7 @@ export async function ensureCatalogReady(): Promise<void> {
     );
   }
 
-  if (
-    !activeManifest?.lastSuccessfulSyncAt ||
-    Date.now() - activeManifest.lastSuccessfulSyncAt > SYNC_TTL_MS
-  ) {
-    void syncCatalog({ force: true });
-  }
+  void syncCatalog();
 }
 
 export { subscribeCatalogVersion };
