@@ -46,3 +46,13 @@ Search, browse, and open [Make.com](https://www.make.com) scenarios across all y
 | `Cmd + C` | Copy URL to clipboard |
 | `Cmd + Shift + C` | Copy webhook URL (scenarios with webhooks) |
 | `Cmd + R` | Refresh data |
+
+## Release
+
+- Install dependencies: `npm ci`
+- Run release checks: `npm run check`
+- Bump version and tag:
+  - Patch (`x.x.n`): `npm run release:patch`
+  - Minor (`x.n.0`): `npm run release:minor`
+  - Major (`n.0.0`): `npm run release:major`
+- Follow the checklist in `docs/release-checklist.md`
