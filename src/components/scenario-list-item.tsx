@@ -69,9 +69,6 @@ export const ScenarioListItem = memo(function ScenarioListItem({
         ...(isPinned
           ? [{ icon: { source: Icon.Star, tintColor: Color.Yellow } }]
           : []),
-        ...(item.metadataState === "pending"
-          ? [{ tag: { value: "Metadata", color: Color.SecondaryText } }]
-          : []),
         { text: item.orgName },
         { tag: { value: zoneLabel(item.zone), color: Color.Blue } },
       ]}

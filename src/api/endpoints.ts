@@ -4,6 +4,7 @@ import {
   apiFetchAllPages,
   apiFetchAllPagesIterator,
   FetchOptions,
+  isApiErrorWithStatus,
 } from "./client.js";
 import {
   Folder,
@@ -22,6 +23,10 @@ function getDiscoveryZone(): Zone {
 
 type RequestOptions = Pick<FetchOptions, "signal" | "timeoutMs">;
 type OrganizationRequestOptions = RequestOptions & { bypassCache?: boolean };
+
+function isForbiddenError(error: unknown): boolean {
+  return isApiErrorWithStatus(error, 403);
+}
 
 export async function fetchCurrentUserId(
   options?: RequestOptions,
@@ -100,16 +105,25 @@ export function fetchScenarioPages(
   teamId: number,
   options?: RequestOptions,
 ): AsyncGenerator<Scenario[], void, void> {
-  return apiFetchAllPagesIterator<Scenario>(
-    {
-      zone,
-      path: "/scenarios",
-      params: { teamId: String(teamId) },
-      signal: options?.signal,
-      timeoutMs: options?.timeoutMs,
-    },
-    "scenarios",
-  );
+  return (async function* () {
+    try {
+      yield* apiFetchAllPagesIterator<Scenario>(
+        {
+          zone,
+          path: "/scenarios",
+          params: { teamId: String(teamId) },
+          signal: options?.signal,
+          timeoutMs: options?.timeoutMs,
+        },
+        "scenarios",
+      );
+    } catch (error) {
+      if (isForbiddenError(error)) {
+        return;
+      }
+      throw error;
+    }
+  })();
 }
 
 export async function fetchHooks(
@@ -117,16 +131,23 @@ export async function fetchHooks(
   teamId: number,
   options?: RequestOptions,
 ): Promise<Hook[]> {
-  return apiFetchAllPages<Hook>(
-    {
-      zone,
-      path: "/hooks",
-      params: { teamId: String(teamId) },
-      signal: options?.signal,
-      timeoutMs: options?.timeoutMs,
-    },
-    "hooks",
-  );
+  try {
+    return await apiFetchAllPages<Hook>(
+      {
+        zone,
+        path: "/hooks",
+        params: { teamId: String(teamId) },
+        signal: options?.signal,
+        timeoutMs: options?.timeoutMs,
+      },
+      "hooks",
+    );
+  } catch (error) {
+    if (isForbiddenError(error)) {
+      return [];
+    }
+    throw error;
+  }
 }
 
 export async function fetchFolders(
@@ -134,16 +155,23 @@ export async function fetchFolders(
   teamId: number,
   options?: RequestOptions,
 ): Promise<Folder[]> {
-  return apiFetchAllPages<Folder>(
-    {
-      zone,
-      path: "/scenarios-folders",
-      params: { teamId: String(teamId) },
-      signal: options?.signal,
-      timeoutMs: options?.timeoutMs,
-    },
-    "scenariosFolders",
-  );
+  try {
+    return await apiFetchAllPages<Folder>(
+      {
+        zone,
+        path: "/scenarios-folders",
+        params: { teamId: String(teamId) },
+        signal: options?.signal,
+        timeoutMs: options?.timeoutMs,
+      },
+      "scenariosFolders",
+    );
+  } catch (error) {
+    if (isForbiddenError(error)) {
+      return [];
+    }
+    throw error;
+  }
 }
 
 export async function fetchUsers(
@@ -151,16 +179,23 @@ export async function fetchUsers(
   teamId: number,
   options?: RequestOptions,
 ): Promise<ScenarioUser[]> {
-  return apiFetchAllPages<ScenarioUser>(
-    {
-      zone,
-      path: "/users",
-      params: { teamId: String(teamId) },
-      signal: options?.signal,
-      timeoutMs: options?.timeoutMs,
-    },
-    "users",
-  );
+  try {
+    return await apiFetchAllPages<ScenarioUser>(
+      {
+        zone,
+        path: "/users",
+        params: { teamId: String(teamId) },
+        signal: options?.signal,
+        timeoutMs: options?.timeoutMs,
+      },
+      "users",
+    );
+  } catch (error) {
+    if (isForbiddenError(error)) {
+      return [];
+    }
+    throw error;
+  }
 }
 
 export async function fetchScenarioLogs(
@@ -168,15 +203,22 @@ export async function fetchScenarioLogs(
   scenarioId: number,
   options?: RequestOptions,
 ): Promise<ScenarioLog[]> {
-  const data = await apiFetch<{ scenarioLogs: ScenarioLog[] }>({
-    zone,
-    path: `/scenarios/${scenarioId}/logs`,
-    params: {
-      "pg[sortDir]": "desc",
-      "pg[limit]": "50",
-    },
-    signal: options?.signal,
-    timeoutMs: options?.timeoutMs,
-  });
-  return data.scenarioLogs;
+  try {
+    const data = await apiFetch<{ scenarioLogs: ScenarioLog[] }>({
+      zone,
+      path: `/scenarios/${scenarioId}/logs`,
+      params: {
+        "pg[sortDir]": "desc",
+        "pg[limit]": "50",
+      },
+      signal: options?.signal,
+      timeoutMs: options?.timeoutMs,
+    });
+    return data.scenarioLogs;
+  } catch (error) {
+    if (isForbiddenError(error)) {
+      return [];
+    }
+    throw error;
+  }
 }

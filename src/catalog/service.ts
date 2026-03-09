@@ -656,9 +656,18 @@ async function waitForActiveSync() {
 }
 
 async function writeTextAtomic(filePath: string, body: string) {
-  const tempPath = `${filePath}.tmp`;
+  const tempPath = `${filePath}.${process.pid}.${Date.now()}.${Math.random()
+    .toString(36)
+    .slice(2)}.tmp`;
+
   await writeFile(tempPath, body, "utf8");
-  await rename(tempPath, filePath);
+
+  try {
+    await rename(tempPath, filePath);
+  } catch (error) {
+    await rm(tempPath, { force: true });
+    throw error;
+  }
 }
 
 async function writeJsonlAtomic(filePath: string, rows: ScenarioRow[]) {
@@ -1548,7 +1557,7 @@ export async function ensureCatalogReady(): Promise<void> {
     );
   }
 
-  void syncCatalog();
+  void syncCatalog({ force: true });
 }
 
 export { subscribeCatalogVersion };

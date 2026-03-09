@@ -5,14 +5,52 @@ import {
 } from "../catalog/cache.js";
 import { ensureCatalogReady } from "../catalog/service.js";
 
-export function useCatalogSyncStatus(autoStart = true) {
-  const [status, setStatus] = useState(getCatalogSyncStatus());
+const SYNC_RUNNING_STALE_MS = 2 * 60 * 1000;
 
-  useEffect(() => subscribeCatalogSyncStatus(setStatus), []);
+interface CatalogSyncViewState {
+  isRunning: boolean;
+  hasError: boolean;
+}
+
+function toViewState(status = getCatalogSyncStatus()): CatalogSyncViewState {
+  return {
+    isRunning:
+      status.status === "running" &&
+      Date.now() - status.updatedAt <= SYNC_RUNNING_STALE_MS,
+    hasError: status.status === "error",
+  };
+}
+
+function mergeViewState(
+  previous: CatalogSyncViewState,
+  next: CatalogSyncViewState,
+): CatalogSyncViewState {
+  if (
+    previous.isRunning === next.isRunning &&
+    previous.hasError === next.hasError
+  ) {
+    return previous;
+  }
+
+  return next;
+}
+
+export function useCatalogSyncStatus(autoStart = true) {
+  const [viewState, setViewState] = useState<CatalogSyncViewState>(toViewState);
+
+  useEffect(
+    () =>
+      subscribeCatalogSyncStatus((status) => {
+        setViewState((previous) =>
+          mergeViewState(previous, toViewState(status)),
+        );
+      }),
+    [],
+  );
 
   useEffect(() => {
     const interval = setInterval(() => {
-      setStatus(getCatalogSyncStatus());
+      setViewState((previous) => mergeViewState(previous, toViewState()));
     }, 500);
 
     return () => clearInterval(interval);
@@ -23,9 +61,5 @@ export function useCatalogSyncStatus(autoStart = true) {
     void ensureCatalogReady();
   }, [autoStart]);
 
-  return {
-    ...status,
-    isRunning: status.status === "running",
-    hasError: status.status === "error",
-  };
+  return viewState;
 }

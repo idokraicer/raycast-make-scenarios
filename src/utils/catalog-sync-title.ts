@@ -1,5 +1,11 @@
 import { CatalogSyncStatus } from "../catalog/types.js";
 
+function isBackgroundRefresh(
+  status: CatalogSyncStatus & { isRunning: boolean; hasError: boolean },
+): boolean {
+  return status.lastSuccessfulSyncAt !== null;
+}
+
 function parseActiveOrgName(
   status: CatalogSyncStatus & { isRunning: boolean; hasError: boolean },
 ): string | null {
@@ -26,29 +32,40 @@ function parseActiveOrgName(
 function buildSyncLabel(
   status: CatalogSyncStatus & { isRunning: boolean; hasError: boolean },
 ): string {
+  const refreshPrefix = isBackgroundRefresh(status) ? "Refreshing" : "Indexing";
+
   switch (status.phase) {
     case "discovering":
-      return "Discovering organizations";
+      return isBackgroundRefresh(status)
+        ? "Refreshing catalog"
+        : "Discovering organizations";
     case "indexing": {
       const orgName = parseActiveOrgName(status);
       if (orgName) {
         return status.totalOrganizations > 0
-          ? `Indexing ${orgName} (${status.completedOrganizations}/${status.totalOrganizations})`
-          : `Indexing ${orgName}`;
+          ? `${refreshPrefix} ${orgName} (${status.completedOrganizations}/${status.totalOrganizations})`
+          : `${refreshPrefix} ${orgName}`;
       }
       return status.totalOrganizations > 0
-        ? `Indexing ${status.completedOrganizations}/${status.totalOrganizations}`
-        : "Indexing";
+        ? `${refreshPrefix} ${status.completedOrganizations}/${status.totalOrganizations}`
+        : refreshPrefix;
     }
     case "finalizing":
-      return "Finalizing";
+      return isBackgroundRefresh(status) ? "Refreshing catalog" : "Finalizing";
     case "enriching": {
       const orgName = parseActiveOrgName(status);
-      return orgName ? `Enriching ${orgName}` : "Enriching metadata";
+      if (orgName) {
+        return isBackgroundRefresh(status)
+          ? `Refreshing ${orgName}`
+          : `Enriching ${orgName}`;
+      }
+      return isBackgroundRefresh(status)
+        ? "Refreshing metadata"
+        : "Enriching metadata";
     }
     case "idle":
     default:
-      return "Syncing";
+      return isBackgroundRefresh(status) ? "Refreshing catalog" : "Syncing";
   }
 }
 

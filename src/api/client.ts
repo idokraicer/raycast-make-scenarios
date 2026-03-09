@@ -26,6 +26,37 @@ export interface FetchOptions {
   timeoutMs?: number;
 }
 
+export class ApiError extends Error {
+  status: number;
+  statusText: string;
+  zone: Zone;
+  path: string;
+
+  constructor(
+    message: string,
+    {
+      status,
+      statusText,
+      zone,
+      path,
+    }: { status: number; statusText: string; zone: Zone; path: string },
+  ) {
+    super(message);
+    this.name = "ApiError";
+    this.status = status;
+    this.statusText = statusText;
+    this.zone = zone;
+    this.path = path;
+  }
+}
+
+export function isApiErrorWithStatus(
+  error: unknown,
+  status: number,
+): error is ApiError {
+  return error instanceof ApiError && error.status === status;
+}
+
 const MAX_PAGES = 50;
 const DEFAULT_TIMEOUT_MS = 30_000;
 const MAX_RATE_LIMIT_RETRIES = 4;
@@ -159,20 +190,50 @@ export async function apiFetch<T>(options: FetchOptions): Promise<T> {
     }
 
     if (!response.ok) {
-      if (response.status === 401 || response.status === 403) {
-        throw new Error(
+      if (response.status === 401) {
+        throw new ApiError(
           `Authentication failed on ${zone}. Check your API token.`,
+          {
+            status: response.status,
+            statusText: response.statusText,
+            zone,
+            path,
+          },
+        );
+      }
+
+      if (response.status === 403) {
+        throw new ApiError(
+          `Forbidden on ${zone}${path}. The token does not have access to this resource.`,
+          {
+            status: response.status,
+            statusText: response.statusText,
+            zone,
+            path,
+          },
         );
       }
 
       if (response.status === 429) {
-        throw new Error(
+        throw new ApiError(
           `API rate limit exceeded after ${MAX_RATE_LIMIT_RETRIES + 1} attempts (${zone}${path})`,
+          {
+            status: response.status,
+            statusText: response.statusText,
+            zone,
+            path,
+          },
         );
       }
 
-      throw new Error(
+      throw new ApiError(
         `API error ${response.status}: ${response.statusText} (${zone}${path})`,
+        {
+          status: response.status,
+          statusText: response.statusText,
+          zone,
+          path,
+        },
       );
     }
 

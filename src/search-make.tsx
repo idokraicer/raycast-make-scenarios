@@ -23,9 +23,7 @@ import { useRecents } from "./hooks/use-recents.js";
 import { useSkippedOrganizations } from "./hooks/use-skipped-organizations.js";
 import { ScenarioListItem } from "./components/scenario-list-item.js";
 import { OrgScenariosView } from "./components/org-scenarios-view.js";
-import { CatalogSyncSection } from "./components/catalog-sync-section.js";
 import { SkippedOrgsSection } from "./components/skipped-orgs-section.js";
-import { buildCatalogSyncNavigationTitle } from "./utils/catalog-sync-title.js";
 import { buildOrgScenariosUrl, zoneLabel } from "./utils/url.js";
 import { parseDropdownFilter, parseSearchText } from "./utils/search-filter.js";
 
@@ -114,12 +112,12 @@ export default function SearchMake() {
   const isLoading =
     pinned.isLoading ||
     recents.isLoading ||
+    syncStatus.isRunning ||
     (!hasResults &&
       (pinnedRows.isLoading ||
         recentRows.isLoading ||
         scenarioRows.isLoading ||
-        organizationRows.isLoading ||
-        syncStatus.isRunning));
+        organizationRows.isLoading));
 
   const refresh = useCallback(async () => {
     try {
@@ -145,10 +143,6 @@ export default function SearchMake() {
   return (
     <List
       isLoading={isLoading}
-      navigationTitle={buildCatalogSyncNavigationTitle(
-        "Search Make",
-        syncStatus,
-      )}
       searchBarPlaceholder="Search Make.com... (type > for orgs)"
       onSearchTextChange={setSearchText}
       searchBarAccessory={
@@ -189,24 +183,11 @@ export default function SearchMake() {
     >
       {!isLoading && !hasResults && (
         <List.EmptyView
-          title={
-            syncStatus.isRunning && !syncStatus.message
-              ? "Loading catalog..."
-              : syncStatus.isRunning
-                ? syncStatus.message
-                : "No results found"
-          }
-          description={
-            syncStatus.isRunning
-              ? syncStatus.totalOrganizations > 0
-                ? `${syncStatus.completedOrganizations}/${syncStatus.totalOrganizations} organizations, ${syncStatus.completedScenarios} scenarios discovered so far.`
-                : "The local catalog is syncing in the background."
-              : "Check your API token and zone in extension preferences."
-          }
+          title="No results found"
+          description="Check your API token and zone in extension preferences."
           icon={Icon.MagnifyingGlass}
         />
       )}
-      <CatalogSyncSection status={syncStatus} />
       {showScenarios && pinnedRows.rows.length > 0 && (
         <List.Section
           title="Pinned"

@@ -10,14 +10,12 @@ import {
 import { syncCatalog } from "./catalog/service.js";
 import { OrganizationListRow } from "./catalog/types.js";
 import { OrgScenariosView } from "./components/org-scenarios-view.js";
-import { CatalogSyncSection } from "./components/catalog-sync-section.js";
 import { SkippedOrgsSection } from "./components/skipped-orgs-section.js";
 import { useCatalogSyncStatus } from "./hooks/use-catalog-sync-status.js";
 import { useOrganizationList } from "./hooks/use-organization-list.js";
 import { usePinned } from "./hooks/use-pinned.js";
 import { useRecents } from "./hooks/use-recents.js";
 import { useSkippedOrganizations } from "./hooks/use-skipped-organizations.js";
-import { buildCatalogSyncNavigationTitle } from "./utils/catalog-sync-title.js";
 import { buildOrgScenariosUrl, zoneLabel } from "./utils/url.js";
 import { useState } from "react";
 
@@ -41,16 +39,11 @@ export default function SearchOrganizations() {
     }
   };
 
+  const isLoading = syncStatus.isRunning || organizations.isLoading;
+
   return (
     <List
-      isLoading={
-        organizations.rows.length === 0 &&
-        (syncStatus.isRunning || organizations.isLoading)
-      }
-      navigationTitle={buildCatalogSyncNavigationTitle(
-        `Organizations (${organizations.totalCount ?? organizations.rows.length})`,
-        syncStatus,
-      )}
+      isLoading={isLoading}
       searchBarPlaceholder="Search organizations..."
       onSearchTextChange={setSearchText}
       throttle
@@ -60,25 +53,13 @@ export default function SearchOrganizations() {
         onLoadMore: organizations.loadMore,
       }}
     >
-      {syncStatus.isRunning && organizations.rows.length === 0 && (
-        <List.EmptyView
-          title={syncStatus.message || "Syncing organizations..."}
-          description={
-            syncStatus.totalOrganizations > 0
-              ? `${syncStatus.completedOrganizations}/${syncStatus.totalOrganizations} organizations, ${syncStatus.completedScenarios} scenarios discovered so far.`
-              : "Building the local catalog for the first time."
-          }
-          icon={Icon.ArrowClockwise}
-        />
-      )}
-      {!syncStatus.isRunning && organizations.rows.length === 0 && (
+      {!isLoading && organizations.rows.length === 0 && (
         <List.EmptyView
           title="No organizations found"
           description="Check your API token and zone in extension preferences."
           icon={Icon.MagnifyingGlass}
         />
       )}
-      <CatalogSyncSection status={syncStatus} />
       {organizations.rows.map((item: OrganizationListRow) => {
         const url = buildOrgScenariosUrl(item.zone, item.teamId);
 
